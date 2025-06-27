@@ -1,0 +1,40 @@
+{
+  "name": "chroma-monorepo",
+  "private": true,
+  "packageManager": "pnpm@10.12.1",
+  "scripts": {
+    "build-core": "pnpm --filter @chroma/core build",
+    "build-manifest": "pnpm --filter @chroma/manifest build",
+    "build-react": "pnpm --filter @chroma/react build",
+    "build": "pnpm build-bridge && pnpm build-core && pnpm build-manifest && pnpm build-react",
+    "dev": "pnpm --filter @chroma/core dev & pnpm --filter @chroma/manifest dev & pnpm --filter @chroma/react dev",
+    "lint": "eslint . --ext .ts,.tsx --max-warnings 0",
+    "format": "prettier --write .",
+    "demo:dev": "vite --config demo/vite.config.ts"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^28.0.6",
+    "@rollup/plugin-node-resolve": "^16.0.1",
+    "@types/chrome": "^0.0.326",
+    "@typescript-eslint/eslint-plugin": "^8.34.1",
+    "@typescript-eslint/parser": "^8.34.1",
+    "eslint": "^9.29.0",
+    "eslint-config-airbnb-base": "^15.0.0",
+    "eslint-config-prettier": "^10.1.5",
+    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-prettier": "^5.5.0",
+    "prettier": "^3.5.3",
+    "rollup": "^4.43.0",
+    "rollup-plugin-esbuild": "^6.2.1",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^3.2.4"
+  },
+  "workspaces": [
+    "packages/*",
+    "demo"
+  ],
+  "dependencies": {
+    "rollup-plugin-dts": "^6.2.1"
+  }
+}

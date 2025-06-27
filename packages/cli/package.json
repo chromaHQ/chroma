@@ -1,0 +1,39 @@
+{
+  "name": "@chroma/cli",
+  "version": "0.1.0",
+  "description": "Scaffold and manage Chroma-powered browser extensions",
+  "bin": {
+    "create-chroma-extension": "dist/index.js"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsup src/index.ts --format esm,cjs --dts --minify",
+    "lint": "eslint src --ext .ts",
+    "release": "pnpm build && changeset publish"
+  },
+  "dependencies": {
+    "commander": "^11.1.0",
+    "execa": "^8.0.1",
+    "fs-extra": "^11.2.0",
+    "inquirer": "^9.2.16",
+    "ejs": "^3.1.10",
+    "picocolors": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^9.0.7",
+    "@types/node": "^20.11.28",
+    "tsx": "^4.7.0",
+    "tsup": "^8.0.2",
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
