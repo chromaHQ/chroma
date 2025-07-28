@@ -109,12 +109,26 @@ class BridgeRuntimeManager {
    */
   private setupPortListener(): void {
     chrome.runtime.onConnect.addListener((port) => {
-      if (!this.isValidPort(port)) {
-        return;
-      }
+      try {
+        if (!this.isValidPort(port)) {
+          return;
+        }
 
-      this.logger.info(`📡 Port connected: ${port.name}`);
-      this.setupMessageHandler(port);
+        this.logger.info(`📡 Port connected: ${port.name}`);
+        this.setupMessageHandler(port);
+
+        if (chrome.runtime.lastError) {
+          this.logger.warn(`Runtime error during port setup: ${chrome.runtime.lastError.message}`);
+          chrome.runtime.lastError;
+        }
+      } catch (error) {
+        this.logger.error('Error setting up port listener:', error);
+
+        if (chrome.runtime.lastError) {
+          this.logger.warn(`Additional runtime error: ${chrome.runtime.lastError.message}`);
+          chrome.runtime.lastError;
+        }
+      }
     });
   }
 
@@ -152,7 +166,12 @@ class BridgeRuntimeManager {
     });
 
     port.onDisconnect.addListener(() => {
-      this.logger.info(`📴 Port disconnected: ${port.name}`);
+      if (chrome.runtime.lastError) {
+        this.logger.warn(`📴 Port disconnected with error: ${chrome.runtime.lastError.message}`);
+        chrome.runtime.lastError;
+      } else {
+        this.logger.info(`📴 Port disconnected: ${port.name}`);
+      }
     });
   }
 
@@ -252,7 +271,21 @@ class BridgeRuntimeManager {
    */
   private sendResponse(port: chrome.runtime.Port, response: BridgeResponse): void {
     try {
+      if (!port) {
+        this.logger.warn(`Cannot send response: port is null (ID: ${response.id})`);
+        return;
+      }
+
       port.postMessage(response);
+
+      if (chrome.runtime.lastError) {
+        this.logger.warn(
+          `Chrome runtime error during postMessage: ${chrome.runtime.lastError.message} (ID: ${response.id})`,
+        );
+
+        chrome.runtime.lastError;
+        return;
+      }
 
       this.logger.debug('📤 Response sent:', {
         id: response.id,
@@ -261,6 +294,11 @@ class BridgeRuntimeManager {
       });
     } catch (error) {
       this.logger.error('Failed to send response:', error);
+
+      if (chrome.runtime.lastError) {
+        this.logger.warn(`Additional Chrome runtime error: ${chrome.runtime.lastError.message}`);
+        chrome.runtime.lastError;
+      }
     }
   }
 

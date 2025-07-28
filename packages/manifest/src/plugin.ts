@@ -6,7 +6,7 @@ import { ExtensionConfig } from './defineExtension';
 
 const bootstrapPath = path.join('src', 'bootstrap.ts');
 const popupPath = path.resolve(process.cwd(), 'index.html');
-const configFilePath = path.resolve(process.cwd(), 'chroma.config.ts');
+const configFilePath = path.resolve(process.cwd(), 'chroma.config.js');
 
 export const chroma = createVitePlugin((options?: { configFile?: string }) => {
   let config: ExtensionConfig;

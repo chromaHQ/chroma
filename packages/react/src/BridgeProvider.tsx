@@ -45,6 +45,7 @@ export const BridgeProvider: React.FC<Props> = ({
   const reconnectTimeoutRef = useRef<any>(null);
   const retryCountRef = useRef(0);
   const isConnectingRef = useRef(false);
+  const errorCheckIntervalRef = useRef<any>(null);
 
   const updateStatus = useCallback(
     (newStatus: ConnectionStatus) => {
@@ -67,6 +68,11 @@ export const BridgeProvider: React.FC<Props> = ({
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
+    }
+
+    if (errorCheckIntervalRef.current) {
+      clearInterval(errorCheckIntervalRef.current);
+      errorCheckIntervalRef.current = null;
     }
 
     if (portRef.current) {
@@ -105,7 +111,50 @@ export const BridgeProvider: React.FC<Props> = ({
 
     try {
       const port = chrome.runtime.connect({ name: 'chroma-bridge' });
+
+      // Check for immediate connection errors
+      if (chrome.runtime.lastError) {
+        throw new Error(chrome.runtime.lastError.message || 'Failed to connect to extension');
+      }
+
       portRef.current = port;
+
+      let errorCheckCount = 0;
+      const maxErrorChecks = 10; // Check for 1 second after connection
+      errorCheckIntervalRef.current = setInterval(() => {
+        errorCheckCount++;
+
+        if (chrome.runtime.lastError) {
+          const errorMessage = chrome.runtime.lastError.message;
+
+          console.warn('[Bridge] Runtime error detected:', errorMessage);
+          chrome.runtime.lastError;
+
+          if (errorCheckIntervalRef.current) {
+            clearInterval(errorCheckIntervalRef.current);
+            errorCheckIntervalRef.current = null;
+          }
+
+          if (errorMessage?.includes('Receiving end does not exist')) {
+            console.warn('[Bridge] Background script not ready, will retry connection');
+            cleanup();
+            isConnectingRef.current = false;
+
+            if (retryCountRef.current < maxRetries) {
+              retryCountRef.current++;
+              const delay = retryAfter * Math.pow(2, retryCountRef.current - 1);
+              reconnectTimeoutRef.current = setTimeout(connect, delay);
+            }
+          }
+        }
+
+        if (errorCheckCount >= maxErrorChecks) {
+          if (errorCheckIntervalRef.current) {
+            clearInterval(errorCheckIntervalRef.current);
+            errorCheckIntervalRef.current = null;
+          }
+        }
+      }, 100);
 
       port.onMessage.addListener((msg) => {
         if (msg.id && pendingRef.current.has(msg.id)) {
@@ -120,7 +169,10 @@ export const BridgeProvider: React.FC<Props> = ({
         isConnectingRef.current = false;
 
         if (chrome.runtime.lastError) {
-          handleError(new Error(chrome.runtime.lastError.message));
+          handleError(
+            new Error(chrome.runtime.lastError.message || 'Port disconnected with error'),
+          );
+          chrome.runtime.lastError;
         } else {
           updateStatus('disconnected');
         }
@@ -156,9 +208,42 @@ export const BridgeProvider: React.FC<Props> = ({
 
             try {
               portRef.current.postMessage({ id, key, payload });
+
+              // Use setTimeout to check for runtime errors asynchronously
+              setTimeout(() => {
+                if (chrome.runtime.lastError) {
+                  const errorMessage = chrome.runtime.lastError.message;
+                  console.warn('[Bridge] Async runtime error after postMessage:', errorMessage);
+                  // Clear the error to prevent unchecked runtime.lastError
+                  chrome.runtime.lastError;
+
+                  // If this message is still pending, reject it
+                  if (pendingRef.current.has(id)) {
+                    clearTimeout(timeout);
+                    pendingRef.current.delete(id);
+                    reject(new Error(errorMessage || 'Async send failed'));
+                  }
+                }
+              }, 0);
+
+              // Also check for immediate runtime errors
+              if (chrome.runtime.lastError) {
+                throw new Error(chrome.runtime.lastError.message || 'Failed to send message');
+              }
             } catch (e) {
               clearTimeout(timeout);
               pendingRef.current.delete(id);
+
+              // Also check for runtime errors in catch block and clear them
+              if (chrome.runtime.lastError) {
+                console.warn(
+                  '[Bridge] Runtime error during postMessage:',
+                  chrome.runtime.lastError.message,
+                );
+
+                chrome.runtime.lastError;
+              }
+
               reject(e instanceof Error ? e : new Error('Send failed'));
             }
           });
