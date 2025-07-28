@@ -1,0 +1,43 @@
+# Source files
+src/
+tests/
+*.test.*
+*.spec.*
+
+# Development files
+.eslintrc.*
+.prettierrc.*
+tsconfig.*
+rollup.config.*
+vite.config.*
+
+# Documentation
+README.md
+CHANGELOG.md
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Dependency directories
+node_modules/
+
+# Build
+.cache/
+.tmp/

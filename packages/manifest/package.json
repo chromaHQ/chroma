@@ -1,15 +1,41 @@
 {
   "name": "@chroma/manifest",
   "version": "0.0.1",
+  "description": "Manifest generation and build tooling for Chroma Chrome extensions",
   "type": "module",
   "main": "dist/manifest.cjs.js",
   "module": "dist/manifest.es.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "import": "./dist/manifest.es.js",
       "types": "./dist/index.d.ts"
     }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chromaHQ/chroma.git",
+    "directory": "packages/manifest"
+  },
+  "keywords": [
+    "chrome-extension",
+    "browser-extension",
+    "manifest",
+    "build-tools",
+    "vite-plugin",
+    "typescript"
+  ],
+  "author": "Chroma Team",
+  "license": "MIT",
+  "homepage": "https://github.com/chromaHQ/chroma#readme",
+  "bugs": {
+    "url": "https://github.com/chromaHQ/chroma/issues"
   },
   "scripts": {
     "build": "rollup -c",

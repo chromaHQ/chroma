@@ -1,16 +1,41 @@
 {
   "name": "@chroma/core",
   "version": "0.0.1",
+  "description": "Core library for building Chrome extensions with Chroma framework",
   "type": "module",
   "main": "dist/index.cjs.js",
   "module": "dist/index.es.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "import": "./dist/index.es.js",
       "require": "./dist/index.cjs.js",
       "types": "./dist/index.d.ts"
     }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chromaHQ/chroma.git",
+    "directory": "packages/core"
+  },
+  "keywords": [
+    "chrome-extension",
+    "browser-extension",
+    "dependency-injection",
+    "framework",
+    "typescript"
+  ],
+  "author": "Chroma Team",
+  "license": "MIT",
+  "homepage": "https://github.com/chromaHQ/chroma#readme",
+  "bugs": {
+    "url": "https://github.com/chromaHQ/chroma/issues"
   },
   "dependencies": {
     "@types/chrome": "^0.0.326",

@@ -11,6 +11,27 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chromaHQ/chroma.git",
+    "directory": "packages/cli"
+  },
+  "keywords": [
+    "chrome-extension",
+    "browser-extension",
+    "cli",
+    "scaffolding",
+    "typescript"
+  ],
+  "author": "Chroma Team",
+  "license": "MIT",
+  "homepage": "https://github.com/chromaHQ/chroma#readme",
+  "bugs": {
+    "url": "https://github.com/chromaHQ/chroma/issues"
+  },
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsup src/index.ts --format esm,cjs --dts --minify",
@@ -34,6 +55,5 @@
   },
   "engines": {
     "node": ">=18"
-  },
-  "license": "MIT"
+  }
 }

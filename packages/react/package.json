@@ -1,17 +1,42 @@
 {
   "name": "@chroma/react",
   "version": "0.0.1",
+  "description": "React bindings for the Chroma Chrome extension framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "peerDependencies": {
-    "react": ">=18"
-  },
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "import": "./dist/index.js",
       "require": "./dist/index.cjs",
       "types": "./dist/index.d.ts"
     }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chromaHQ/chroma.git",
+    "directory": "packages/react"
+  },
+  "keywords": [
+    "chrome-extension",
+    "browser-extension",
+    "react",
+    "hooks",
+    "typescript"
+  ],
+  "author": "Chroma Team",
+  "license": "MIT",
+  "homepage": "https://github.com/chromaHQ/chroma#readme",
+  "bugs": {
+    "url": "https://github.com/chromaHQ/chroma/issues"
+  },
+  "peerDependencies": {
+    "react": ">=18"
   },
   "devDependencies": {
     "@rollup/plugin-node-resolve": "^15.2.3",

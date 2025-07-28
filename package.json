@@ -10,9 +10,18 @@
     "dev": "pnpm --filter @chroma/core dev & pnpm --filter @chroma/manifest dev & pnpm --filter @chroma/react dev",
     "lint": "eslint . --ext .ts,.tsx --max-warnings 0",
     "format": "prettier --write .",
-    "demo:dev": "vite --config demo/vite.config.ts"
+    "demo:dev": "vite --config demo/vite.config.ts",
+    "test": "vitest run",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "pnpm build && changeset publish",
+    "prepare": "husky"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^0.5.1",
+    "@changesets/cli": "^2.29.5",
+    "@commitlint/cli": "^19.8.1",
+    "@commitlint/config-conventional": "^19.8.1",
     "@rollup/plugin-commonjs": "^28.0.6",
     "@rollup/plugin-node-resolve": "^16.0.1",
     "@types/chrome": "^0.0.326",
@@ -23,6 +32,8 @@
     "eslint-config-prettier": "^10.1.5",
     "eslint-plugin-import": "^2.31.0",
     "eslint-plugin-prettier": "^5.5.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.1.2",
     "prettier": "^3.5.3",
     "rollup": "^4.43.0",
     "rollup-plugin-esbuild": "^6.2.1",
@@ -36,5 +47,14 @@
   ],
   "dependencies": {
     "rollup-plugin-dts": "^6.2.1"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ]
   }
 }
