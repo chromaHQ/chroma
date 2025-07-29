@@ -1,4 +1,5 @@
 {
+  "private": true,
   "name": "@chroma/cli",
   "version": "0.1.0",
   "description": "Scaffold and manage Chroma-powered browser extensions",
