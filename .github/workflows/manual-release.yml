@@ -19,7 +19,7 @@ jobs:
     permissions:
       contents: write
       packages: write
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -47,6 +47,11 @@ jobs:
           pnpm build-manifest
           pnpm build-react
 
+      - name: Configure git
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
       - name: Version packages
         run: pnpm version-packages
 
@@ -58,8 +63,6 @@ jobs:
 
       - name: Create Git tags and push
         run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
           git add .
           git commit -m "Release: version packages" || exit 0
           git push

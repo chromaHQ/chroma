@@ -57,6 +57,11 @@ jobs:
           pnpm build-manifest
           pnpm build-react
 
+      - name: Configure git
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
       - name: Create Release Pull Request or Publish
         id: changesets
         uses: changesets/action@v1
@@ -65,7 +70,6 @@ jobs:
           title: 'Release: version packages'
           commit: 'Release: version packages'
           createGithubReleases: true
-          setupGitUser: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
