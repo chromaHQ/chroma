@@ -6,7 +6,7 @@
     "build-core": "pnpm --filter @chroma/core build",
     "build-manifest": "pnpm --filter @chroma/manifest build",
     "build-react": "pnpm --filter @chroma/react build",
-    "build": "pnpm build-bridge && pnpm build-core && pnpm build-manifest && pnpm build-react",
+    "build": "pnpm build-core && pnpm build-manifest && pnpm build-react",
     "dev": "pnpm --filter @chroma/core dev & pnpm --filter @chroma/manifest dev & pnpm --filter @chroma/react dev",
     "lint": "eslint packages/ --ext .js,.mjs",
     "format": "prettier --write .",
@@ -40,7 +40,9 @@
     "vitest": "^3.2.4"
   },
   "workspaces": [
-    "packages/*",
+    "packages/core",
+    "packages/manifest",
+    "packages/react",
     "demo"
   ],
   "dependencies": {
