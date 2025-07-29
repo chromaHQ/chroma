@@ -64,5 +64,5 @@ jobs:
       - name: Create Git tags and push
         run: |
           git add .
-          git commit -m "Release: version packages" || exit 0
+          git commit -m "chore: release packages" || exit 0
           git push
