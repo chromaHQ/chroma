@@ -90,6 +90,17 @@ Set these secrets in your GitHub repository:
 
 - `NPM_TOKEN`: Your npm authentication token with publish permissions
 
+## GitHub Actions Permissions
+
+Ensure GitHub Actions has proper permissions in your repository:
+
+1. Go to **Repository Settings** → **Actions** → **General**
+2. Under **Workflow permissions**:
+   - ✅ Select **Read and write permissions**
+   - ✅ Check **Allow GitHub Actions to create and approve pull requests**
+
+Alternatively, you can create a Personal Access Token with `repo` and `workflow` scopes and add it as `PAT_TOKEN` secret.
+
 ## Package Publishing
 
 All packages are published with:
