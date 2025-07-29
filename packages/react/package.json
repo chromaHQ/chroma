@@ -1,6 +1,6 @@
 {
   "name": "@chroma/react",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "React bindings for the Chroma Chrome extension framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
