@@ -39,14 +39,24 @@ perf: optimize bundle size by lazy loading components
 
 ## Creating Releases
 
-### 1. Making Changes
+### Method 1: Manual Workflow Dispatch (Recommended)
+
+1. Go to GitHub Actions in your repository
+2. Select "Manual Release" workflow
+3. Click "Run workflow"
+4. Choose release type (patch, minor, major)
+5. Packages will be automatically published to npm
+
+### Method 2: Traditional Changesets Flow
+
+#### 1. Making Changes
 
 1. Create a feature branch from `main`
 2. Make your changes
 3. Commit using conventional commit format
 4. Create a pull request
 
-### 2. Adding Changesets
+#### 2. Adding Changesets
 
 When you make changes that should trigger a release, add a changeset:
 
@@ -55,26 +65,13 @@ pnpm changeset
 ```
 
 This will:
-
 - Prompt you to select which packages were changed
 - Ask for the type of change (major, minor, patch)
 - Generate a changeset file in `.changeset/`
 
-### 3. Automatic Releases
+#### 3. Manual Release
 
-When changes are merged to `main`:
-
-1. GitHub Actions will run tests and build packages
-2. If there are pending changesets, a "Release PR" will be created
-3. The Release PR will:
-   - Update package versions according to semantic versioning
-   - Update CHANGELOG.md files
-   - Remove consumed changeset files
-4. When the Release PR is merged, packages are automatically published to npm
-
-## Manual Release
-
-To manually trigger a release:
+After changesets are added and merged to main:
 
 ```bash
 # Version packages (updates package.json and CHANGELOG.md)
@@ -84,22 +81,21 @@ pnpm version-packages
 pnpm release
 ```
 
+Or use the GitHub Actions "Release" workflow manually.
+
 ## GitHub Secrets Required
 
 Set these secrets in your GitHub repository:
 
 - `NPM_TOKEN`: Your npm authentication token with publish permissions
 
-## GitHub Actions Permissions
+## No Special Permissions Needed
 
-Ensure GitHub Actions has proper permissions in your repository:
+This setup works with GitHub's default workflow permissions. No need to enable:
+- ❌ "Read and write permissions" 
+- ❌ "Allow GitHub Actions to create and approve pull requests"
 
-1. Go to **Repository Settings** → **Actions** → **General**
-2. Under **Workflow permissions**:
-   - ✅ Select **Read and write permissions**
-   - ✅ Check **Allow GitHub Actions to create and approve pull requests**
-
-Alternatively, you can create a Personal Access Token with `repo` and `workflow` scopes and add it as `PAT_TOKEN` secret.
+The workflows use manual triggers to avoid permission issues while maintaining security.
 
 ## Package Publishing
 
