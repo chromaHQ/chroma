@@ -1,6 +1,39 @@
 # Release Management
 
-This project uses automated semantic versioning and publishing through Changesets and GitHub Actions.
+This project uses automated semantic versioning and publishing through GitHub Actions.
+
+## Release Process
+
+### Manual Release (Recommended)
+
+1. **Trigger Release Workflow**:
+   - Go to GitHub Actions → Release workflow
+   - Click "Run workflow"
+   - Choose version bump: `patch`, `minor`, `major`, or specific version (e.g., `1.2.3`)
+
+2. **What Happens Automatically**:
+   - Updates package versions
+   - Builds all packages
+   - Creates git tag
+   - Publishes to npm
+   - Creates GitHub release with auto-generated notes
+
+### Local Release (Alternative)
+
+```bash
+# Update package versions manually
+pnpm --filter "@chroma/*" version patch  # or minor, major
+
+# Build and publish
+pnpm release
+```
+
+## Version Types
+
+- **patch**: Bug fixes and minor updates (1.0.0 → 1.0.1)
+- **minor**: New features (1.0.0 → 1.1.0)
+- **major**: Breaking changes (1.0.0 → 2.0.0)
+- **specific**: Use exact version like `1.2.3`
 
 ## Conventional Commits
 
@@ -37,52 +70,6 @@ docs: update README with installation instructions
 perf: optimize bundle size by lazy loading components
 ```
 
-## Creating Releases
-
-### Method 1: Manual Workflow Dispatch (Recommended)
-
-1. Go to GitHub Actions in your repository
-2. Select "Manual Release" workflow
-3. Click "Run workflow"
-4. Choose release type (patch, minor, major)
-5. Packages will be automatically published to npm
-
-### Method 2: Traditional Changesets Flow
-
-#### 1. Making Changes
-
-1. Create a feature branch from `main`
-2. Make your changes
-3. Commit using conventional commit format
-4. Create a pull request
-
-#### 2. Adding Changesets
-
-When you make changes that should trigger a release, add a changeset:
-
-```bash
-pnpm changeset
-```
-
-This will:
-- Prompt you to select which packages were changed
-- Ask for the type of change (major, minor, patch)
-- Generate a changeset file in `.changeset/`
-
-#### 3. Manual Release
-
-After changesets are added and merged to main:
-
-```bash
-# Version packages (updates package.json and CHANGELOG.md)
-pnpm version-packages
-
-# Build and publish to npm
-pnpm release
-```
-
-Or use the GitHub Actions "Release" workflow manually.
-
 ## GitHub Secrets Required
 
 Set these secrets in your GitHub repository:
@@ -92,7 +79,8 @@ Set these secrets in your GitHub repository:
 ## No Special Permissions Needed
 
 This setup works with GitHub's default workflow permissions. No need to enable:
-- ❌ "Read and write permissions" 
+
+- ❌ "Read and write permissions"
 - ❌ "Allow GitHub Actions to create and approve pull requests"
 
 The workflows use manual triggers to avoid permission issues while maintaining security.
@@ -115,7 +103,7 @@ Published packages:
 
 ## Versioning Strategy
 
-This project follows [Semantic Versioning](https://semver.org/):
+This project follows [Semantic Versioning](https://semver.org/).
 
 - **MAJOR** version when you make incompatible API changes
 - **MINOR** version when you add functionality in a backward compatible manner
