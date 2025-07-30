@@ -9,10 +9,9 @@
     "lint": "eslint . --ext .ts,.tsx"
   },
   "dependencies": {
-    "@chroma/core": "^0.1.0",
-    "@chroma/bridge": "^0.1.0",
-    "@chroma/react": "^0.1.0",
-    "@chroma/manifest": "^0.1.0",
+    "@chromahq/core": "^0.1.0",
+    "@chromahq/react": "^0.1.0",
+    "@chromahq/manifest": "^0.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

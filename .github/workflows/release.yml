@@ -68,7 +68,7 @@ jobs:
 
       - name: Version packages
         run: |
-          pnpm --filter "@chroma/*" version ${{ github.event.inputs.version }}
+          pnpm --filter "@chromahq/*" version ${{ github.event.inputs.version }}
 
       - name: Commit version changes
         run: |

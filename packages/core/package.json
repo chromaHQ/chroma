@@ -1,5 +1,5 @@
 {
-  "name": "@chroma/core",
+  "name": "@chromahq/core",
   "version": "0.0.1",
   "description": "Core library for building Chrome extensions with Chroma framework",
   "type": "module",
