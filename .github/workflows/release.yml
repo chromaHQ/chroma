@@ -71,8 +71,35 @@ jobs:
         run: |
           echo "Versioning packages with: ${{ github.event.inputs.version }}"
 
-          # Update package.json versions directly
-          pnpm --filter "@chromahq/*" exec npm version ${{ github.event.inputs.version }} --no-git-tag-version
+          # Update package.json versions directly using node
+          for package_dir in packages/*/; do
+            if [[ -f "$package_dir/package.json" ]]; then
+              echo "Updating version in $package_dir"
+              node -e "
+                const fs = require('fs');
+                const path = require('path');
+                const pkgPath = path.join('$package_dir', 'package.json');
+                const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+                
+                // Handle version input (patch/minor/major or specific version)
+                const input = '${{ github.event.inputs.version }}';
+                let newVersion;
+                
+                if (['patch', 'minor', 'major'].includes(input)) {
+                  const [major, minor, patch] = pkg.version.split('.').map(Number);
+                  if (input === 'patch') newVersion = \`\${major}.\${minor}.\${patch + 1}\`;
+                  else if (input === 'minor') newVersion = \`\${major}.\${minor + 1}.0\`;
+                  else if (input === 'major') newVersion = \`\${major + 1}.0.0\`;
+                } else {
+                  newVersion = input;
+                }
+                
+                pkg.version = newVersion;
+                fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+                console.log(\`Updated \${pkg.name} to \${newVersion}\`);
+              "
+            fi
+          done
 
           # Get the new version from package.json after versioning
           NEW_VERSION=$(node -p "require('./packages/core/package.json').version")
