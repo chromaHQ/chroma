@@ -14,11 +14,6 @@
       "import": "./dist/index.es.js",
       "require": "./dist/index.cjs.js",
       "types": "./dist/index.d.ts"
-    },
-    "./autoRegister": {
-      "import": "./dist/autoRegister.js",
-      "require": "./dist/autoRegister.cjs.js",
-      "types": "./dist/autoRegister.d.ts"
     }
   },
   "publishConfig": {

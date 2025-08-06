@@ -54,11 +54,9 @@ export class StoreBuilder<T = any> {
     const bridge = this.config.bridge || (globalThis as any).bridge;
 
     if (bridge) {
-      console.log('Creating bridge store', this.config.name);
       createBridgeStore<T>(bridge, undefined, this.config.name);
     }
 
-    console.log('Creating service worker store', this.config.name);
     return this.createServiceWorkerStore();
   }
 
@@ -74,7 +72,6 @@ export class StoreBuilder<T = any> {
       return state;
     };
 
-    // All stores are automatically persistent
     const persistOptions = { name: this.config.name };
     const persistedCreator = chromeStoragePersist<T>(persistOptions)(creator);
 

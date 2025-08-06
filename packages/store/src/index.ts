@@ -5,9 +5,6 @@ export * from './bridge.js';
 
 export { createStore, StoreBuilder } from './StoreBuilder.js';
 
-// Store registry utilities
-export { registerStoreGlobally } from './registry.js';
-
 // Elegant hook factory (preferred approach)
 export { createStoreHooks } from './hookFactory.js';
 
