@@ -67,20 +67,25 @@ jobs:
           git config --local user.name "GitHub Action"
 
       - name: Version packages
+        id: version-packages
         run: |
+          echo "Versioning packages with: ${{ github.event.inputs.version }}"
           pnpm --filter "@chromahq/*" version ${{ github.event.inputs.version }}
+
+          # Get the new version from package.json after versioning
+          NEW_VERSION=$(node -p "require('./packages/core/package.json').version")
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "New version: $NEW_VERSION"
 
       - name: Commit version changes
         run: |
           git add .
-          git commit -m "chore: release version ${{ github.event.inputs.version }}" || echo "No changes to commit"
+          git commit -m "chore: release version v${{ steps.version-packages.outputs.version }}" || echo "No changes to commit"
 
       - name: Create git tag
-        id: get-version
         run: |
-          VERSION=$(node -p "require('./packages/core/package.json').version")
+          VERSION="${{ steps.version-packages.outputs.version }}"
           git tag "v$VERSION"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Created tag v$VERSION"
 
       - name: Push changes and tags
@@ -96,8 +101,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.get-version.outputs.version }}
-          name: Release v${{ steps.get-version.outputs.version }}
+          tag_name: v${{ steps.version-packages.outputs.version }}
+          name: Release v${{ steps.version-packages.outputs.version }}
           draft: false
           prerelease: false
           generate_release_notes: true
