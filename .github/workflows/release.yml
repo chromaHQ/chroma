@@ -70,7 +70,9 @@ jobs:
         id: version-packages
         run: |
           echo "Versioning packages with: ${{ github.event.inputs.version }}"
-          pnpm --filter "@chromahq/*" version ${{ github.event.inputs.version }}
+
+          # Update package.json versions directly
+          pnpm --filter "@chromahq/*" exec npm version ${{ github.event.inputs.version }} --no-git-tag-version
 
           # Get the new version from package.json after versioning
           NEW_VERSION=$(node -p "require('./packages/core/package.json').version")
@@ -85,6 +87,14 @@ jobs:
       - name: Create git tag
         run: |
           VERSION="${{ steps.version-packages.outputs.version }}"
+
+          # Check if tag already exists
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "Tag v$VERSION already exists, deleting it first"
+            git tag -d "v$VERSION" || true
+            git push origin --delete "v$VERSION" || true
+          fi
+
           git tag "v$VERSION"
           echo "Created tag v$VERSION"
 
