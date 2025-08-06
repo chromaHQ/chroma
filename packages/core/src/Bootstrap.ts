@@ -84,7 +84,7 @@ class ApplicationBootstrap {
     this.logger.info('🔍 Discovering services...');
 
     const serviceModules = import.meta.glob<{ default?: Newable<any> }>(
-      '/src/app/services/*.service.{ts,js}',
+      '/src/app/services/**/*.service.{ts,js}',
       { eager: true },
     );
 
@@ -405,7 +405,7 @@ class ApplicationBootstrap {
     this.logger.info('📨 Registering messages...');
 
     const messageModules = import.meta.glob<{ default?: Newable<any> }>(
-      '/src/app/messages/*.message.{ts,js}',
+      '/src/app/messages/**/*.message.{ts,js}',
       { eager: true },
     );
 
@@ -456,7 +456,7 @@ class ApplicationBootstrap {
     this.logger.info('🚀 Booting messages...');
 
     const messageModules = import.meta.glob<{ default?: Newable<any> }>(
-      '/src/app/messages/*.message.{ts,js}',
+      '/src/app/messages/**/*.message.{ts,js}',
       { eager: true },
     );
 
