@@ -6,8 +6,9 @@
     "build-core": "pnpm --filter @chromahq/core build",
     "build-manifest": "pnpm --filter @chromahq/manifest build",
     "build-react": "pnpm --filter @chromahq/react build",
-    "build": "pnpm build-core && pnpm build-manifest && pnpm build-react",
-    "dev": "pnpm --filter @chromahq/core dev & pnpm --filter @chromahq/manifest dev & pnpm --filter @chromahq/react dev",
+    "build-store": "pnpm --filter @chromahq/store build",
+    "build": "pnpm build-core && pnpm build-manifest && pnpm build-react && pnpm build-store",
+    "dev": "pnpm --filter @chromahq/core dev & pnpm --filter @chromahq/manifest dev & pnpm --filter @chromahq/react dev & pnpm --filter @chromahq/store dev",
     "lint": "eslint packages/ --ext .js,.mjs",
     "format": "prettier --write .",
     "demo:dev": "vite --config demo/vite.config.ts",
@@ -43,6 +44,7 @@
     "packages/core",
     "packages/manifest",
     "packages/react",
+    "packages/store",
     "demo"
   ],
   "dependencies": {

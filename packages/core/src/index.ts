@@ -12,7 +12,7 @@
 
 export * from './di/Container';
 import { inject } from 'inversify';
-export { create } from './Bootstrap';
+export { create, bootstrap } from './Bootstrap';
 export { Message, IMessage } from './decorators/Message';
 export { Injectable } from './decorators/Injectable';
 export { Booteable, isBooteable, isDestroyable } from './services/booteable';

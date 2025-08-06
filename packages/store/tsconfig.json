@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "include": ["src", "tests"],
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "types": ["vite/client", "chrome"],
+    "declarationDir": "dist/types",
+    "outDir": "dist"
+  }
+}

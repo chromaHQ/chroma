@@ -291,6 +291,7 @@ class BridgeRuntimeManager {
         id: response.id,
         hasData: !!response.data,
         hasError: !!response.error,
+        data: response.data,
       });
     } catch (error) {
       this.logger.error('Failed to send response:', error);
@@ -347,6 +348,7 @@ class BridgeLogger {
 
 export function bootstrap(options: BridgeRuntimeOptions): void {
   const runtime = new BridgeRuntimeManager(options);
+  console.debug('🌉 Initializing Bridge Runtime with options:', options);
   runtime.initialize();
 }
 

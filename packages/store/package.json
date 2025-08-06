@@ -1,0 +1,64 @@
+{
+  "name": "@chromahq/store",
+  "version": "0.1.0",
+  "description": "Centralized, persistent store for Chrome extensions using zustand, accessible from service workers and React, with chrome.storage.local persistence.",
+  "type": "module",
+  "main": "dist/index.cjs.js",
+  "module": "dist/index.es.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "import": "./dist/index.es.js",
+      "require": "./dist/index.cjs.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./autoRegister": {
+      "import": "./dist/autoRegister.js",
+      "require": "./dist/autoRegister.cjs.js",
+      "types": "./dist/autoRegister.d.ts"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chromaHQ/chroma.git",
+    "directory": "packages/store"
+  },
+  "keywords": [
+    "chrome-extension",
+    "browser-extension",
+    "store",
+    "zustand",
+    "react",
+    "service-worker",
+    "persistence",
+    "chrome-storage"
+  ],
+  "author": "Chroma Team",
+  "license": "MIT",
+  "homepage": "https://github.com/chromaHQ/chroma#readme",
+  "bugs": {
+    "url": "https://github.com/chromaHQ/chroma/issues"
+  },
+  "peerDependencies": {
+    "@chromahq/core": ">=0.0.1",
+    "react": ">=18"
+  },
+  "dependencies": {
+    "zustand": "^5.0.7"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.326",
+    "@types/react": "^18.2.7",
+    "typescript": "^5.8.3"
+  },
+  "scripts": {
+    "build": "rollup -c rollup.config.mjs",
+    "dev": "rollup -c rollup.config.mjs --watch"
+  }
+}

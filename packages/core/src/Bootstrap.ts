@@ -1,6 +1,6 @@
 import { decorate, inject, injectable, Newable } from 'inversify';
 import { container } from './di/Container';
-import { bootstrap } from './runtime/BridgeRuntime';
+import { bootstrap as bridgeBootstrap } from './runtime/BridgeRuntime';
 import { JobRegistry, Scheduler } from './scheduler';
 import { IJob } from './scheduler/core/IJob';
 
@@ -29,8 +29,30 @@ class ApplicationBootstrap {
   private readonly serviceDependencies = new Map<string, ServiceMetadata>();
   private readonly serviceRegistry = new Map<string, Newable<any>>();
   private readonly logger = new BootstrapLogger();
+  private readonly storeDefinitions: any[] = [];
 
   private scheduler: Scheduler | undefined;
+
+  /**
+   * Add a store definition to be initialized
+   */
+  public withStore(storeDefinition: any): ApplicationBootstrap {
+    if (storeDefinition && storeDefinition.name) {
+      this.storeDefinitions.push(storeDefinition);
+      this.logger.debug(`📦 Added store definition: ${storeDefinition.name}`);
+    }
+    return this;
+  }
+
+  /**
+   * Add multiple store definitions to be initialized
+   */
+  public withStores(storeDefinitions: any[]): ApplicationBootstrap {
+    for (const store of storeDefinitions) {
+      this.withStore(store);
+    }
+    return this;
+  }
 
   /**
    * Create and initialize a new Chroma application instance
@@ -40,6 +62,7 @@ class ApplicationBootstrap {
       this.logger.info('🚀 Starting Chroma application bootstrap...');
 
       await this.discoverServices();
+      await this.discoverAndInitializeStores();
       await this.validateDependencies();
       await this.registerServices();
       await this.registerMessages();
@@ -47,7 +70,7 @@ class ApplicationBootstrap {
       await this.bootMessages();
 
       this.logger.success('🎉 Chroma application initialization complete!');
-      bootstrap({ container });
+      bridgeBootstrap({ container });
     } catch (error) {
       this.logger.error('💥 Application bootstrap failed:', error as any);
       throw error;
@@ -92,6 +115,42 @@ class ApplicationBootstrap {
     }
 
     this.logger.success(`✅ Discovered ${this.serviceDependencies.size} services`);
+  }
+
+  /**
+   * Initialize stores from provided definitions
+   */
+  private async discoverAndInitializeStores(): Promise<void> {
+    try {
+      if (this.storeDefinitions.length === 0) {
+        this.logger.debug('📭 No store definitions provided');
+        return;
+      }
+
+      this.logger.info(`Initializing ${this.storeDefinitions.length} store(s)...`);
+
+      // Check if @chromahq/store is available in global registry
+      const chromaGlobal = (globalThis as any).__CHROMA__;
+
+      if (chromaGlobal?.initStores && typeof chromaGlobal.initStores === 'function') {
+        for (const store of this.storeDefinitions) {
+          const { classes } = await chromaGlobal.initStores(store);
+
+          this.registerMessageClass(classes.GetStoreStateMessage, `store:${store.name}:getState`);
+          this.registerMessageClass(classes.SetStoreStateMessage, `store:${store.name}:setState`);
+          this.registerMessageClass(
+            classes.SubscribeToStoreMessage,
+            `store:${store.name}:subscribe`,
+          );
+
+          this.logger.debug(`✅ Initialized store: ${store.name}`);
+        }
+      }
+
+      this.logger.success(`✅ Initialized ${this.storeDefinitions.length} store(s)`);
+    } catch (error) {
+      this.logger.error('❌ Failed to initialize stores:', error as any);
+    }
   }
 
   /**
@@ -359,6 +418,7 @@ class ApplicationBootstrap {
 
         // Apply decorators
         decorate(injectable(), MessageClass);
+
         dependencies.forEach((dependency, index) => {
           decorate(inject(dependency), MessageClass, index);
         });
@@ -373,6 +433,20 @@ class ApplicationBootstrap {
         this.logger.error(`❌ Failed to register message ${MessageClass.name}:`, error as any);
       }
     }
+  }
+
+  private async registerMessageClass(MessageClass: Newable<any>, name: string): Promise<void> {
+    const dependencies = this.resolveDependencies(MessageClass);
+
+    // Apply decorators
+    decorate(injectable(), MessageClass);
+
+    dependencies.forEach((dependency, index) => {
+      decorate(inject(dependency), MessageClass, index);
+    });
+
+    container.bind(name).to(MessageClass).inSingletonScope();
+    this.logger.success(`✅ Registered message: ${name}`);
   }
 
   /**
@@ -484,4 +558,36 @@ class BootstrapLogger {
 export async function create(): Promise<void> {
   const bootstrap = new ApplicationBootstrap();
   await bootstrap.create();
+}
+
+// Fluent API for store configuration
+export function bootstrap(): BootstrapBuilder {
+  return new BootstrapBuilder();
+}
+
+class BootstrapBuilder {
+  private readonly app = new ApplicationBootstrap();
+
+  /**
+   * Add a store definition to be initialized
+   */
+  public withStore(storeDefinition: any): BootstrapBuilder {
+    this.app.withStore(storeDefinition);
+    return this;
+  }
+
+  /**
+   * Add multiple store definitions to be initialized
+   */
+  public withStores(storeDefinitions: any[]): BootstrapBuilder {
+    this.app.withStores(storeDefinitions);
+    return this;
+  }
+
+  /**
+   * Create and start the application
+   */
+  public async create(): Promise<void> {
+    await this.app.create();
+  }
 }
