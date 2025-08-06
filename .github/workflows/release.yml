@@ -57,9 +57,7 @@ jobs:
 
       - name: Build packages
         run: |
-          pnpm build-core
-          pnpm build-manifest
-          pnpm build-react
+          pnpm run build
 
       - name: Configure git
         run: |
