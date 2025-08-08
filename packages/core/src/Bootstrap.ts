@@ -57,7 +57,13 @@ class ApplicationBootstrap {
   /**
    * Create and initialize a new Chroma application instance
    */
-  public async create(): Promise<void> {
+  public async create({
+    keepPortAlive = false,
+    portName,
+  }: {
+    keepPortAlive?: boolean;
+    portName?: string;
+  }): Promise<void> {
     try {
       this.logger.info('🚀 Starting Chroma application bootstrap...');
 
@@ -70,7 +76,7 @@ class ApplicationBootstrap {
       await this.bootMessages();
 
       this.logger.success('🎉 Chroma application initialization complete!');
-      bridgeBootstrap({ container });
+      bridgeBootstrap({ container, keepAlive: keepPortAlive, portName });
     } catch (error) {
       this.logger.error('💥 Application bootstrap failed:', error as any);
       throw error;

@@ -10,6 +10,7 @@ interface BridgeRuntimeOptions {
   readonly portName?: string;
   readonly enableLogging?: boolean;
   readonly errorHandler?: ErrorHandler;
+  readonly keepAlive?: boolean; // If true, keep service worker alive
 }
 
 /**
@@ -80,6 +81,9 @@ class BridgeRuntimeManager {
   private readonly enableLogging: boolean;
   private readonly errorHandler: ErrorHandler;
   private readonly logger: BridgeLogger;
+  private readonly keepAlive: boolean;
+  private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+  private static readonly KEEP_ALIVE_INTERVAL_MS = 25000;
   private isInitialized = false;
 
   constructor(options: BridgeRuntimeOptions) {
@@ -88,6 +92,7 @@ class BridgeRuntimeManager {
     this.enableLogging = options.enableLogging ?? true;
     this.errorHandler = options.errorHandler ?? new DefaultErrorHandler();
     this.logger = new BridgeLogger(this.enableLogging);
+    this.keepAlive = options.keepAlive ?? false;
   }
 
   /**
@@ -100,6 +105,9 @@ class BridgeRuntimeManager {
     }
 
     this.setupPortListener();
+    if (this.keepAlive) {
+      this.startKeepAlive();
+    }
     this.isInitialized = true;
     this.logger.success(`🌉 Bridge runtime initialized on port: ${this.portName}`);
   }
@@ -137,9 +145,19 @@ class BridgeRuntimeManager {
    */
   private isValidPort(port: chrome.runtime.Port): boolean {
     if (port.name !== this.portName) {
-      this.logger.warn(`🚫 Ignoring port "${port.name}", expected "${this.portName}"`);
+      this.logger.warn(`Ignoring port "${port.name}", expected "${this.portName}"`);
       return false;
     }
+    const senderId = port.sender?.id;
+
+    if (senderId !== chrome.runtime.id) {
+      this.logger.warn(
+        `Ignoring port from different extension (senderId: ${senderId}, expected: ${chrome.runtime.id})`,
+      );
+
+      return false;
+    }
+
     return true;
   }
 
@@ -311,6 +329,30 @@ class BridgeRuntimeManager {
       portName: this.portName,
       initialized: this.isInitialized,
     };
+  }
+
+  /**
+   * Start keep-alive timer to keep service worker alive
+   */
+  private startKeepAlive(): void {
+    if (this.keepAliveTimer) return;
+    this.logger.info('Starting keep-alive timer to keep service worker alive');
+    this.keepAliveTimer = setInterval(() => {
+      chrome.runtime.getPlatformInfo(() => {
+        // No-op, just to keep the worker alive
+      });
+    }, BridgeRuntimeManager.KEEP_ALIVE_INTERVAL_MS);
+  }
+
+  /**
+   * Stop keep-alive timer
+   */
+  private stopKeepAlive(): void {
+    if (this.keepAliveTimer) {
+      clearInterval(this.keepAliveTimer);
+      this.keepAliveTimer = null;
+      this.logger.info('Stopped keep-alive timer');
+    }
   }
 }
 
