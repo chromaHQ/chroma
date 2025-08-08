@@ -1,3 +1,25 @@
+/**
+ * Generic action hook factory for any store instance.
+ * Usage:
+ *   const store = createStore(mergeSlices(sliceA, sliceB));
+ *   <StoreProvider store={store}> ... </StoreProvider>
+ *   export const useWalletActions = createActionHookForStore(store, walletActions);
+ *   export const useCounterActions = createActionHookForStore(store, counterActions);
+ * All hooks and actions share the same StoreProvider/context.
+ */
+export function createActionHookForStore<
+  S extends Record<string, any>,
+  ActionMap extends Record<string, (...args: any[]) => void>,
+>(
+  store: CentralStore<S>,
+  actionsFactory: (actions: ReturnType<typeof useStoreActions<S>>) => ActionMap,
+): () => ActionMap {
+  return function useCustomActions(): ActionMap {
+    const baseActions = useStoreActions(store);
+    return useMemo(() => actionsFactory(baseActions), [baseActions]);
+  };
+}
+
 import * as React from 'react';
 import { useContext, createContext, ReactNode, useRef, useMemo } from 'react';
 import { useCentralStore } from './react.js';
@@ -25,47 +47,67 @@ function useStoreActions<T extends Record<string, any>>(store: CentralStore<T>) 
   );
 }
 
-/**
- * Create store hooks for context-based state and actions.
- * Use useStore for state selection and useActions for auto-wired actions.
- */
 export function createStoreHooks<T extends Record<string, any>>() {
   const StoreContext = createContext<CentralStore<T> | null>(null);
 
-  // Store Provider component
   function StoreProvider({ store, children }: { store: CentralStore<T>; children: ReactNode }) {
     const storeRef = useRef(store);
     return React.createElement(StoreContext.Provider, { value: storeRef.current }, children);
   }
 
-  // Hook for selecting state values (always requires selector)
   function useStore<U>(selector: (state: T) => U): U {
     const store = useContext(StoreContext);
     if (!store) throw new Error('useStore must be used within a StoreProvider');
     return useCentralStore(store, selector);
   }
 
-  // Hook for getting store instance
   function useStoreInstance(): CentralStore<T> {
     const store = useContext(StoreContext);
     if (!store) throw new Error('useStoreInstance must be used within a StoreProvider');
     return store;
   }
 
-  // Hook for basic actions (auto-wired, no store parameter needed)
   function useActions() {
     const store = useStoreInstance();
     return useStoreActions(store);
   }
 
-  // Hook for selecting a single action from context (no need to pass store)
-  function useAction<K extends keyof T>(actionKey: K): T[K] {
+  type ActionKeys<T> = {
+    [K in keyof T]: T[K] extends (...args: any[]) => any ? K : never;
+  }[keyof T];
+
+  function useAction<K extends ActionKeys<T>>(actionKey: K): T[K] {
     const store = useStoreInstance();
-    const action = useCentralStore(store, (state) => state[actionKey]);
-    return action;
+    return React.useCallback(
+      (...args: any[]) => {
+        const fn = store.getState()[actionKey];
+        if (typeof fn !== 'function') {
+          throw new Error('useAction only supports function actions');
+        }
+        return fn(...args);
+      },
+      [store, actionKey],
+    ) as T[K];
+  }
+
+  /**
+   * Generic action hook creator for any state type.
+   * Usage:
+   *   export const useWalletActions = createActionHook<WalletState>(walletActions);
+   *   export const useCounterActions = createActionHook<CounterState>(counterActions);
+   */
+  function createActionHook<ActionMap extends Record<string, (...args: any[]) => void>>(
+    actionsFactory: (actions: ReturnType<typeof useStoreActions<T>>) => ActionMap,
+  ) {
+    return function useCustomActions(): ActionMap {
+      const store = useStoreInstance();
+      const baseActions = useStoreActions(store);
+      return useMemo(() => actionsFactory(baseActions), [baseActions]);
+    };
   }
 
   return {
+    createActionHook,
     StoreProvider,
     useStore,
     useStoreInstance,
