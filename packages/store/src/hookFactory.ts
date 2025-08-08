@@ -4,27 +4,21 @@ import { useCentralStore } from './react.js';
 import type { CentralStore } from './types.js';
 
 /**
- * Store actions helper (inlined from actions.ts)
+ * Store actions helper: exposes update, updateWith, replace, setState
+ * Actions should be defined in your slice and accessed via useActions.
  */
 function useStoreActions<T extends Record<string, any>>(store: CentralStore<T>) {
   return useMemo(
     () => ({
-      // Update state with partial data
       update: (partial: Partial<T>) => {
         store.setState((state) => ({ ...state, ...partial }));
       },
-
-      // Update state with a function
       updateWith: (updater: (state: T) => Partial<T>) => {
         store.setState((state) => ({ ...state, ...updater(state) }));
       },
-
-      // Replace entire state
       replace: (newState: T) => {
         store.setState(newState, true);
       },
-
-      // Direct access to setState
       setState: store.setState.bind(store),
     }),
     [store],
@@ -32,8 +26,8 @@ function useStoreActions<T extends Record<string, any>>(store: CentralStore<T>) 
 }
 
 /**
- * Create a complete store hook factory with typed providers and action creators
- * This prevents confusion by providing only the hooks you need, not global ones
+ * Create store hooks for context-based state and actions.
+ * Use useStore for state selection and useActions for auto-wired actions.
  */
 export function createStoreHooks<T extends Record<string, any>>() {
   const StoreContext = createContext<CentralStore<T> | null>(null);
@@ -64,15 +58,11 @@ export function createStoreHooks<T extends Record<string, any>>() {
     return useStoreActions(store);
   }
 
-  // Factory for creating custom action hooks
-  function createActionHook<ActionMap extends Record<string, (...args: any[]) => void>>(
-    actionsFactory: (actions: ReturnType<typeof useStoreActions<T>>) => ActionMap,
-  ) {
-    return function useCustomActions(): ActionMap {
-      const store = useStoreInstance();
-      const baseActions = useStoreActions(store);
-      return useMemo(() => actionsFactory(baseActions), [baseActions]);
-    };
+  // Hook for selecting a single action from context (no need to pass store)
+  function useAction<K extends keyof T>(actionKey: K): T[K] {
+    const store = useStoreInstance();
+    const action = useCentralStore(store, (state) => state[actionKey]);
+    return action;
   }
 
   return {
@@ -80,6 +70,6 @@ export function createStoreHooks<T extends Record<string, any>>() {
     useStore,
     useStoreInstance,
     useActions,
-    createActionHook,
+    useAction,
   };
 }

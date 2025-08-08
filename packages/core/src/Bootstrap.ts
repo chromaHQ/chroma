@@ -561,9 +561,18 @@ class BootstrapLogger {
 }
 
 // Laravel-style facade for clean API
-export async function create(): Promise<void> {
+export async function create({
+  keepPortAlive = false,
+  portName,
+}: {
+  keepPortAlive?: boolean;
+  portName?: string;
+} = {}): Promise<void> {
   const bootstrap = new ApplicationBootstrap();
-  await bootstrap.create();
+  await bootstrap.create({
+    keepPortAlive,
+    portName,
+  });
 }
 
 // Fluent API for store configuration
@@ -593,7 +602,13 @@ class BootstrapBuilder {
   /**
    * Create and start the application
    */
-  public async create(): Promise<void> {
-    await this.app.create();
+  public async create({
+    keepPortAlive = false,
+    portName,
+  }: {
+    keepPortAlive?: boolean;
+    portName?: string;
+  } = {}): Promise<void> {
+    await this.app.create({ keepPortAlive, portName });
   }
 }
