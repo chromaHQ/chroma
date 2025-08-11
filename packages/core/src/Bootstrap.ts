@@ -74,12 +74,30 @@ class ApplicationBootstrap {
       await this.registerMessages();
       await this.registerJobs();
       await this.bootMessages();
+      await this.bootServices();
 
       this.logger.success('🎉 Chroma application initialization complete!');
       bridgeBootstrap({ container, keepAlive: keepPortAlive, portName });
     } catch (error) {
       this.logger.error('💥 Application bootstrap failed:', error as any);
       throw error;
+    }
+  }
+  /**
+   * Boot all registered services by calling their onBoot method if present
+   */
+  private async bootServices(): Promise<void> {
+    this.logger.info('🚀 Booting services...');
+    for (const [serviceName, ServiceClass] of this.serviceRegistry.entries()) {
+      try {
+        const instance = container.get(ServiceClass);
+        if (typeof instance.onBoot === 'function') {
+          await instance.onBoot();
+          this.logger.success(`Booted service: ${serviceName}`);
+        }
+      } catch (error) {
+        this.logger.error(`Failed to boot service ${serviceName}:`, error as any);
+      }
     }
   }
 
