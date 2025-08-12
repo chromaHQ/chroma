@@ -3,6 +3,7 @@ export * from './types.js';
 export * from './react.js';
 export * from './bridge.js';
 export * from './hookFactory.js';
+export * from './decorators/Store.js';
 
 export { createStore, StoreBuilder } from './StoreBuilder.js';
 
