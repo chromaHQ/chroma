@@ -91,6 +91,7 @@ class ApplicationBootstrap {
     for (const [serviceName, ServiceClass] of this.serviceRegistry.entries()) {
       try {
         const instance = container.get(ServiceClass);
+
         if (typeof instance.onBoot === 'function') {
           await instance.onBoot();
           this.logger.success(`Booted service: ${serviceName}`);
@@ -217,20 +218,47 @@ class ApplicationBootstrap {
 
     const parameters = constructorMatch[1]
       .split(',')
-      .map((param) => param.trim().toLowerCase())
+      .map((param) => param.trim())
       .filter((param) => param.length > 0);
 
-    const dependencies: Newable<any>[] = [];
+    const dependencies: any[] = [];
 
     for (const param of parameters) {
+      const paramName = param.toLowerCase();
+      // If parameter is 'store' or matches 'store*', resolve to DI-bound store
+      if (paramName === 'store' || paramName.startsWith('store')) {
+        // Try named store first (CentralStore:storeName), fallback to CentralStore
+        let storeInstance;
+        // If param is 'store', use default
+        if (paramName === 'store' && container.isBound('CentralStore')) {
+          storeInstance = container.get('CentralStore');
+        } else {
+          // Try to match param name to store name: e.g. storeMyStore -> CentralStore:myStore
+          const storeKeyMatch = paramName.match(/^store(.+)$/);
+          if (storeKeyMatch && storeKeyMatch[1]) {
+            const storeName = storeKeyMatch[1].replace(/^([A-Z])/, (m) => m.toLowerCase());
+            const diKey = `CentralStore:${storeName}`;
+            if (container.isBound(diKey)) {
+              storeInstance = container.get(diKey);
+            }
+          }
+        }
+        // Fallback to undefined if not found
+        if (!storeInstance) {
+          this.logger.warn(`⚠️  No store found for parameter "${param}" in ${ServiceClass.name}`);
+        }
+        dependencies.push(storeInstance);
+        continue;
+      }
+      // Otherwise, resolve as a service
       const matchingService = Array.from(this.serviceRegistry.entries()).find(
-        ([name]) => name.toLowerCase() === param,
+        ([name]) => name.toLowerCase() === paramName,
       );
-
       if (matchingService) {
         dependencies.push(matchingService[1]);
       } else {
         this.logger.warn(`⚠️  No service found for parameter "${param}" in ${ServiceClass.name}`);
+        dependencies.push(undefined);
       }
     }
 
