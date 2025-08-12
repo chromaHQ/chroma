@@ -66,9 +66,9 @@ class ApplicationBootstrap {
   }): Promise<void> {
     try {
       this.logger.info('🚀 Starting Chroma application bootstrap...');
+      await this.discoverAndInitializeStores();
 
       await this.discoverServices();
-      await this.discoverAndInitializeStores();
       await this.validateDependencies();
       await this.registerServices();
       await this.registerMessages();
@@ -157,8 +157,18 @@ class ApplicationBootstrap {
       const chromaGlobal = (globalThis as any).__CHROMA__;
 
       if (chromaGlobal?.initStores && typeof chromaGlobal.initStores === 'function') {
+        let isFirstStore = true;
         for (const store of this.storeDefinitions) {
-          const { classes } = await chromaGlobal.initStores(store);
+          const { classes, store: storeInstance } = await chromaGlobal.initStores(store);
+
+          // Bind store instance to DI container for injection
+          const diKey = `CentralStore:${store.name}`;
+          container.bind(diKey).toConstantValue(storeInstance);
+          // Also bind the first store to 'CentralStore' for default resolution
+          if (isFirstStore) {
+            container.bind('CentralStore').toConstantValue(storeInstance);
+            isFirstStore = false;
+          }
 
           this.registerMessageClass(classes.GetStoreStateMessage, `store:${store.name}:getState`);
           this.registerMessageClass(classes.SetStoreStateMessage, `store:${store.name}:setState`);
