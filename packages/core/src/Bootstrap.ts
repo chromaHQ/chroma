@@ -225,29 +225,21 @@ class ApplicationBootstrap {
 
     for (const param of parameters) {
       const paramName = param.toLowerCase();
-      // If parameter is 'store' or matches 'store*', resolve to DI-bound store
-      if (paramName === 'store' || paramName.startsWith('store')) {
+      if (paramName === 'appstore') {
         // Try named store first (CentralStore:storeName), fallback to CentralStore
         let storeInstance;
         // If param is 'store', use default
-        if (paramName === 'store' && container.isBound('CentralStore')) {
+        if (paramName === 'appstore' && container.isBound('CentralStore')) {
           storeInstance = container.get('CentralStore');
-        } else {
-          // Try to match param name to store name: e.g. storeMyStore -> CentralStore:myStore
-          const storeKeyMatch = paramName.match(/^store(.+)$/);
-          if (storeKeyMatch && storeKeyMatch[1]) {
-            const storeName = storeKeyMatch[1].replace(/^([A-Z])/, (m) => m.toLowerCase());
-            const diKey = `CentralStore:${storeName}`;
-            if (container.isBound(diKey)) {
-              storeInstance = container.get(diKey);
-            }
+
+          if (!storeInstance) {
+            throw new Error(`No store found for parameter "${param}" in ${ServiceClass.name}`);
           }
+
+          Reflect.defineMetadata('name', param, storeInstance as any);
+        } else {
+          //dependencies.push(storeInstance);
         }
-        // Fallback to undefined if not found
-        if (!storeInstance) {
-          this.logger.warn(`⚠️  No store found for parameter "${param}" in ${ServiceClass.name}`);
-        }
-        dependencies.push(storeInstance);
         continue;
       }
       // Otherwise, resolve as a service
@@ -407,6 +399,10 @@ class ApplicationBootstrap {
         decorate(inject(dependency), ServiceClass, index);
       });
 
+      if (container.isBound('CentralStore')) {
+        decorate(inject('CentralStore'), ServiceClass, serviceMetadata.dependencies.length);
+      }
+
       // Bind to container
       container.bind(ServiceClass).toSelf().inSingletonScope();
       serviceMetadata.registered = true;
@@ -484,6 +480,10 @@ class ApplicationBootstrap {
         dependencies.forEach((dependency, index) => {
           decorate(inject(dependency), MessageClass, index);
         });
+
+        if (container.isBound('CentralStore')) {
+          decorate(inject('CentralStore'), MessageClass, dependencies.length);
+        }
 
         // Register with container
         const messageMetadata = Reflect.getMetadata('name', MessageClass);
@@ -563,6 +563,10 @@ class ApplicationBootstrap {
         dependencies.forEach((dependency, index) => {
           decorate(inject(dependency), JobClass, index);
         });
+
+        if (container.isBound('CentralStore')) {
+          decorate(inject('CentralStore'), JobClass, dependencies.length);
+        }
 
         // Register with container
         const jobMetadata = Reflect.getMetadata('name', JobClass);

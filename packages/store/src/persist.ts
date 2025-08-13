@@ -69,7 +69,6 @@ export function chromeStoragePersist<S>(options: PersistOptions) {
         persistenceSetup = true;
 
         store.subscribe((state) => {
-          if (!isInitialized) return;
           persistState(state);
         });
       };
