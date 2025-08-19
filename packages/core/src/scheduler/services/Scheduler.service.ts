@@ -12,8 +12,8 @@ export class Scheduler {
 
   constructor() {
     console.log('Scheduler initialized');
-    this.alarm.onTrigger((id) => this.execute(id));
-    this.timeout.onTrigger((id) => this.execute(id));
+    this.alarm.onTrigger(this.execute.bind(this));
+    this.timeout.onTrigger(this.execute.bind(this));
   }
 
   schedule(id: string, options: JobOptions) {
@@ -25,7 +25,6 @@ export class Scheduler {
 
     console.log(`Scheduling job ${id} with options:`, options);
     const when = this.getScheduleTime(options);
-    console.log(`Job ${id} will execute at:`, new Date(when).toISOString());
 
     const adapter = when - Date.now() < 60_000 ? this.timeout : this.alarm;
     const timerId = adapter.schedule(id, when);
@@ -74,7 +73,7 @@ export class Scheduler {
       this.registry.updateState(id, JobState.RUNNING);
       console.log(`Executing job ${id}`);
 
-      await job.handle(context);
+      await job.handle.call(job, context);
 
       if (!context.isStopped() && !context.isPaused()) {
         this.registry.updateState(id, JobState.COMPLETED);

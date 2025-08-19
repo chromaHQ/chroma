@@ -546,9 +546,12 @@ class ApplicationBootstrap {
   private async registerJobs(): Promise<void> {
     this.logger.info('🕒 Registering jobs...');
 
-    const jobModules = import.meta.glob<{ default?: Newable<any> }>('/src/app/jobs/*.job.{ts,js}', {
-      eager: true,
-    });
+    const jobModules = import.meta.glob<{ default?: Newable<any> }>(
+      '/src/app/jobs/**/*.job.{ts,js}',
+      { eager: true },
+    );
+
+    this.scheduler = new Scheduler();
 
     for (const module of Object.values(jobModules)) {
       const JobClass = module?.default;
@@ -574,12 +577,11 @@ class ApplicationBootstrap {
         container.bind(JobClass).toSelf().inSingletonScope();
 
         // add to registry
-        const id = '12';
+        const id = `${jobName.toLowerCase()}:${JobClass.name.toLowerCase()} ${Math.random().toString(36).substring(2, 15)}`;
         const options = Reflect.getMetadata('job:options', JobClass) || {};
 
         const instance = container.get<typeof JobClass>(JobClass);
 
-        this.scheduler = new Scheduler();
         JobRegistry.instance.register(id, instance as unknown as IJob<unknown>, options);
         this.scheduler.schedule(id, options);
 
