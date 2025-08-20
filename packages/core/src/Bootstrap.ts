@@ -88,6 +88,7 @@ class ApplicationBootstrap {
    */
   private async bootServices(): Promise<void> {
     this.logger.info('🚀 Booting services...');
+    console.log('services', this.serviceRegistry.entries());
     for (const [serviceName, ServiceClass] of this.serviceRegistry.entries()) {
       try {
         const instance = container.get(ServiceClass);
@@ -161,13 +162,12 @@ class ApplicationBootstrap {
         let isFirstStore = true;
         for (const store of this.storeDefinitions) {
           const { classes, store: storeInstance } = await chromaGlobal.initStores(store);
-
           // Bind store instance to DI container for injection
           const diKey = `CentralStore:${store.name}`;
           container.bind(diKey).toConstantValue(storeInstance);
-          // Also bind the first store to 'CentralStore' for default resolution
+          // Also bind the first store to 'appStore' for default resolution
           if (isFirstStore) {
-            container.bind('CentralStore').toConstantValue(storeInstance);
+            container.bind('appStore').toConstantValue(storeInstance);
             isFirstStore = false;
           }
 
@@ -229,19 +229,17 @@ class ApplicationBootstrap {
         // Try named store first (CentralStore:storeName), fallback to CentralStore
         let storeInstance;
         // If param is 'store', use default
-        if (paramName === 'appstore' && container.isBound('CentralStore')) {
-          storeInstance = container.get('CentralStore');
 
-          if (!storeInstance) {
-            throw new Error(`No store found for parameter "${param}" in ${ServiceClass.name}`);
-          }
+        storeInstance = container.get('appStore');
 
-          Reflect.defineMetadata('name', param, storeInstance as any);
-        } else {
-          //dependencies.push(storeInstance);
+        if (!storeInstance) {
+          throw new Error(`No store found for parameter "${param}" in ${ServiceClass.name}`);
         }
+
+        dependencies.push('appStore');
         continue;
       }
+
       // Otherwise, resolve as a service
       const matchingService = Array.from(this.serviceRegistry.entries()).find(
         ([name]) => name.toLowerCase() === paramName,
@@ -399,10 +397,6 @@ class ApplicationBootstrap {
         decorate(inject(dependency), ServiceClass, index);
       });
 
-      if (container.isBound('CentralStore')) {
-        decorate(inject('CentralStore'), ServiceClass, serviceMetadata.dependencies.length);
-      }
-
       // Bind to container
       container.bind(ServiceClass).toSelf().inSingletonScope();
       serviceMetadata.registered = true;
@@ -480,10 +474,6 @@ class ApplicationBootstrap {
         dependencies.forEach((dependency, index) => {
           decorate(inject(dependency), MessageClass, index);
         });
-
-        if (container.isBound('CentralStore')) {
-          decorate(inject('CentralStore'), MessageClass, dependencies.length);
-        }
 
         // Register with container
         const messageMetadata = Reflect.getMetadata('name', MessageClass);
@@ -567,10 +557,6 @@ class ApplicationBootstrap {
           decorate(inject(dependency), JobClass, index);
         });
 
-        if (container.isBound('CentralStore')) {
-          decorate(inject('CentralStore'), JobClass, dependencies.length);
-        }
-
         // Register with container
         const jobMetadata = Reflect.getMetadata('name', JobClass);
         const jobName = jobMetadata || JobClass.name;
@@ -578,6 +564,8 @@ class ApplicationBootstrap {
 
         // add to registry
         const id = `${jobName.toLowerCase()}:${JobClass.name.toLowerCase()} ${Math.random().toString(36).substring(2, 15)}`;
+        container.bind(id).to(JobClass).inSingletonScope();
+
         const options = Reflect.getMetadata('job:options', JobClass) || {};
 
         const instance = container.get<typeof JobClass>(JobClass);

@@ -2,9 +2,12 @@ import { AlarmAdapter } from '../scheduler/adapters/AlarmAdapter';
 import { TimeoutAdapter } from '../scheduler/adapters/TimeoutAdapter';
 import { JobRegistry } from '../scheduler/JobRegistry';
 import { JobOptions } from '../core/JobOptions';
-import { JobState } from '../core/IJob';
+import { IJob, JobState } from '../core/IJob';
 import { getNextCronDate } from '../support/cron';
+import { Injectable } from '../../decorators/Injectable';
+import { container } from '../../di/Container';
 
+@Injectable()
 export class Scheduler {
   private readonly registry = JobRegistry.instance;
   private readonly alarm = new AlarmAdapter();
@@ -73,7 +76,11 @@ export class Scheduler {
       this.registry.updateState(id, JobState.RUNNING);
       console.log(`Executing job ${id}`);
 
-      await job.handle.call(job, context);
+      // get job instance from container
+      const jobInstance = container.get(id) as IJob;
+
+      console.log(jobInstance);
+      await jobInstance.handle.bind(jobInstance).call(jobInstance, context);
 
       if (!context.isStopped() && !context.isPaused()) {
         this.registry.updateState(id, JobState.COMPLETED);
