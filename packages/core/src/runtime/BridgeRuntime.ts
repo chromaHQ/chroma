@@ -61,8 +61,6 @@ interface ErrorHandler {
  */
 class DefaultErrorHandler implements ErrorHandler {
   handle(error: Error, context: PipelineContext): BridgeResponse {
-    console.error('Error in bridge handler:', error);
-
     return {
       id: context.request.id,
       error: error?.message ?? 'UNKNOWN_ERROR',

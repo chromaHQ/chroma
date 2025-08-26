@@ -158,8 +158,14 @@ export const BridgeProvider: React.FC<Props> = ({
 
       port.onMessage.addListener((msg) => {
         if (msg.id && pendingRef.current.has(msg.id)) {
-          const { resolve } = pendingRef.current.get(msg.id)!;
-          resolve(msg.data);
+          const { resolve, reject } = pendingRef.current.get(msg.id)!;
+
+          if (msg.error) {
+            reject(new Error(msg.error));
+          } else {
+            resolve(msg.data);
+          }
+
           pendingRef.current.delete(msg.id);
         }
       });
