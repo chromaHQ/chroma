@@ -1,3 +1,5 @@
+import 'reflect-metadata';
+
 export * from './persist.js';
 export * from './types.js';
 export * from './react.js';

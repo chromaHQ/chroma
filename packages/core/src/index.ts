@@ -9,6 +9,7 @@
  *
  * Powerful chrome extension framework
  */
+import 'reflect-metadata';
 
 export { Service, Use, Store } from './decorators/Service';
 export { Message, IMessage } from './decorators/Message';
