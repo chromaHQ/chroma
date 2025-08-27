@@ -10,17 +10,16 @@
  * Powerful chrome extension framework
  */
 
-export * from './di/Container';
-import { inject } from 'inversify';
-export { create, bootstrap } from './Bootstrap';
+export { Service, Use, Store } from './decorators/Service';
 export { Message, IMessage } from './decorators/Message';
-export { Injectable } from './decorators/Injectable';
+
+export * from './scheduler/core/Job';
+export * from './scheduler/decorators/Delay';
+export * from './scheduler/decorators/Every';
+
 export { Booteable, isBooteable, isDestroyable } from './services/booteable';
 
-export { inject as Inject };
-
 export * from './scheduler/core/IJob';
-
 export * from './scheduler/core/Job';
 export * from './scheduler/decorators/Delay';
 export * from './scheduler/decorators/Every';

@@ -6,7 +6,16 @@ import commonjs from '@rollup/plugin-commonjs';
 export default [
   {
     input: 'src/index.ts',
-    external: ['react', 'react-dom', 'zustand', 'zustand/vanilla'],
+    external: [
+      'react',
+      'react-dom',
+      'zustand',
+      'zustand/vanilla',
+      '@inversifyjs/container',
+      '@inversifyjs/core',
+      '@inversifyjs/common',
+      'reflect-metadata',
+    ],
     output: [
       {
         file: 'dist/index.cjs.js',
@@ -18,13 +27,12 @@ export default [
       },
     ],
     plugins: [
-      nodeResolve({ browser: true, preferBuiltins: false }), 
+      nodeResolve({ browser: true, preferBuiltins: false }),
       commonjs(),
-      esbuild({ 
-        minify: false, 
+      esbuild({
         target: 'es2020',
-        jsx: 'automatic'
-      })
+        jsx: 'automatic',
+      }),
     ],
     treeshake: { moduleSideEffects: false },
   },

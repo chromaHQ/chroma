@@ -1,4 +1,4 @@
-import type { Container } from 'inversify';
+import type { Container } from '@inversifyjs/container';
 
 export interface BridgeOptions {
   /**

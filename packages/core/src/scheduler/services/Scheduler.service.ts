@@ -4,10 +4,8 @@ import { JobRegistry } from '../scheduler/JobRegistry';
 import { JobOptions } from '../core/JobOptions';
 import { IJob, JobState } from '../core/IJob';
 import { getNextCronDate } from '../support/cron';
-import { Injectable } from '../../decorators/Injectable';
 import { container } from '../../di/Container';
 
-@Injectable()
 export class Scheduler {
   private readonly registry = JobRegistry.instance;
   private readonly alarm = new AlarmAdapter();

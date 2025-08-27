@@ -1,4 +1,4 @@
-import { Container as Di } from 'inversify';
+import { Container as Di } from '@inversifyjs/container';
 
 export const METADATA_KEY = {
   PARAM_TYPES: 'design:paramtypes',

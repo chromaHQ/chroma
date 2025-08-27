@@ -1,4 +1,4 @@
-import type { Container } from 'inversify';
+import type { Container } from '@inversifyjs/container';
 import { MiddlewareFn, MiddlewareRegistry } from '../internal/MiddlewareRegistry';
 import { DEFAULT_PORT_NAME } from '../internal/constants';
 

@@ -1,8 +1,10 @@
-import { decorate, inject, injectable, Newable } from 'inversify';
 import { container } from './di/Container';
 import { bootstrap as bridgeBootstrap } from './runtime/BridgeRuntime';
 import { JobRegistry, Scheduler } from './scheduler';
 import { IJob } from './scheduler/core/IJob';
+import { TOKENS } from './decorators/tokens';
+
+type Newable<T> = new (...args: any[]) => T;
 
 interface ServiceMetadata {
   readonly service: Newable<any>;
@@ -117,7 +119,12 @@ class ApplicationBootstrap {
     // First pass: register service classes
     for (const module of Object.values(serviceModules)) {
       const ServiceClass = module?.default;
-      if (!ServiceClass) continue;
+      if (!ServiceClass || typeof ServiceClass !== 'function') {
+        this.logger.warn(
+          `⚠️  Skipping invalid service module - no default export or not a constructor`,
+        );
+        continue;
+      }
 
       this.serviceRegistry.set(ServiceClass.name, ServiceClass);
     }
@@ -125,7 +132,7 @@ class ApplicationBootstrap {
     // Second pass: analyze dependencies
     for (const module of Object.values(serviceModules)) {
       const ServiceClass = module?.default;
-      if (!ServiceClass) continue;
+      if (!ServiceClass || typeof ServiceClass !== 'function') continue;
 
       const dependencies = this.resolveDependencies(ServiceClass);
 
@@ -165,9 +172,9 @@ class ApplicationBootstrap {
           // Bind store instance to DI container for injection
           const diKey = `CentralStore:${store.name}`;
           container.bind(diKey).toConstantValue(storeInstance);
-          // Also bind the first store to 'appStore' for default resolution
+
           if (isFirstStore) {
-            container.bind('appStore').toConstantValue(storeInstance);
+            container.bind(TOKENS.Store).toConstantValue(storeInstance);
             isFirstStore = false;
           }
 
@@ -196,7 +203,14 @@ class ApplicationBootstrap {
     const paramTypes = Reflect.getMetadata('design:paramtypes', ServiceClass) || [];
 
     if (paramTypes.length > 0) {
-      return paramTypes.filter((type: any) => type && type !== Object);
+      // Filter out invalid types and return valid dependencies
+      const validDependencies = paramTypes.filter((type: any) => {
+        return type && type !== Object && typeof type === 'function';
+      });
+
+      if (validDependencies.length > 0) {
+        return validDependencies;
+      }
     }
 
     // Fallback to constructor string parsing
@@ -226,30 +240,24 @@ class ApplicationBootstrap {
     for (const param of parameters) {
       const paramName = param.toLowerCase();
       if (paramName === 'appstore') {
-        // Try named store first (CentralStore:storeName), fallback to CentralStore
-        let storeInstance;
-        // If param is 'store', use default
-
-        storeInstance = container.get('appStore');
-
-        if (!storeInstance) {
-          throw new Error(`No store found for parameter "${param}" in ${ServiceClass.name}`);
-        }
-
+        // Store dependency - we'll resolve this at runtime, not during discovery
         dependencies.push('appStore');
+        continue;
+      } else {
         continue;
       }
 
-      // Otherwise, resolve as a service
-      const matchingService = Array.from(this.serviceRegistry.entries()).find(
-        ([name]) => name.toLowerCase() === paramName,
-      );
-      if (matchingService) {
-        dependencies.push(matchingService[1]);
-      } else {
-        this.logger.warn(`⚠️  No service found for parameter "${param}" in ${ServiceClass.name}`);
-        dependencies.push(undefined);
-      }
+      // // Otherwise, resolve as a service
+      // const matchingService = Array.from(this.serviceRegistry.entries()).find(
+      //   ([name]) => name.toLowerCase() === paramName,
+      // );
+      // if (matchingService) {
+      //   dependencies.push(matchingService[1]);
+      // } else {
+      //   this.logger.warn(`⚠️  No service found for parameter "${param}" in ${ServiceClass.name}`);
+      //   // Skip undefined dependencies instead of pushing them
+      //   continue;
+      // }
     }
 
     return dependencies;
@@ -349,9 +357,6 @@ class ApplicationBootstrap {
     for (const serviceName of this.serviceDependencies.keys()) {
       await this.registerService(serviceName);
     }
-
-    const results = this.getRegistrationResults();
-    this.reportRegistrationResults(results);
   }
 
   /**
@@ -372,81 +377,25 @@ class ApplicationBootstrap {
       return { success: true, message: `Service ${serviceName} already registered` };
     }
 
-    if (visitedServices.has(serviceName)) {
-      const cycle = [...registrationPath, serviceName];
-      this.logger.warn(`🔄 Circular dependency in registration: ${cycle.join(' → ')}`);
-      return { success: false, message: 'Circular dependency detected' };
-    }
-
-    const newVisited = new Set(visitedServices).add(serviceName);
-    const newPath = [...registrationPath, serviceName];
-
-    // Register dependencies first
-    for (const dependency of serviceMetadata.dependencies) {
-      if (this.serviceDependencies.has(dependency.name)) {
-        await this.registerService(dependency.name, newVisited, newPath);
-      }
-    }
-
     try {
       const ServiceClass = serviceMetadata.service;
 
-      // Apply decorators
-      decorate(injectable(), ServiceClass);
-      serviceMetadata.dependencies.forEach((dependency, index) => {
-        decorate(inject(dependency), ServiceClass, index);
-      });
+      // Validate that ServiceClass exists and is a constructor function
+      if (!ServiceClass || typeof ServiceClass !== 'function') {
+        const errorMessage = `Invalid service class for ${serviceName}`;
+        this.logger.error(`❌ ${errorMessage}`);
+        return { success: false, message: errorMessage };
+      }
 
       // Bind to container
       container.bind(ServiceClass).toSelf().inSingletonScope();
       serviceMetadata.registered = true;
-
       this.logger.success(`✅ Registered service: ${ServiceClass.name}`);
       return { success: true, message: `Successfully registered ${ServiceClass.name}` };
     } catch (error) {
       const errorMessage = `Failed to register ${serviceName}`;
       this.logger.error(`❌ ${errorMessage}:`, error as any);
       return { success: false, message: errorMessage, error: error as Error };
-    }
-  }
-
-  /**
-   * Get registration results summary
-   */
-  private getRegistrationResults(): { successful: string[]; failed: string[] } {
-    const successful: string[] = [];
-    const failed: string[] = [];
-
-    for (const [name, metadata] of this.serviceDependencies.entries()) {
-      if (metadata.registered) {
-        successful.push(name);
-      } else {
-        failed.push(name);
-      }
-    }
-
-    return { successful, failed };
-  }
-
-  /**
-   * Report service registration results
-   */
-  private reportRegistrationResults({
-    successful,
-    failed,
-  }: {
-    successful: string[];
-    failed: string[];
-  }): void {
-    if (failed.length > 0) {
-      this.logger.error('⚠️  Some services could not be registered:');
-      failed.forEach((serviceName) => {
-        const metadata = this.serviceDependencies.get(serviceName);
-        const deps = metadata?.dependencies.map((d) => d.name).join(', ') || 'none';
-        this.logger.error(`   • ${serviceName} (dependencies: ${deps})`);
-      });
-    } else {
-      this.logger.success(`✅ All ${successful.length} services registered successfully`);
     }
   }
 
@@ -466,15 +415,6 @@ class ApplicationBootstrap {
       if (!MessageClass) continue;
 
       try {
-        const dependencies = this.resolveDependencies(MessageClass);
-
-        // Apply decorators
-        decorate(injectable(), MessageClass);
-
-        dependencies.forEach((dependency, index) => {
-          decorate(inject(dependency), MessageClass, index);
-        });
-
         // Register with container
         const messageMetadata = Reflect.getMetadata('name', MessageClass);
         const messageName = messageMetadata || MessageClass.name;
@@ -488,15 +428,6 @@ class ApplicationBootstrap {
   }
 
   private async registerMessageClass(MessageClass: Newable<any>, name: string): Promise<void> {
-    const dependencies = this.resolveDependencies(MessageClass);
-
-    // Apply decorators
-    decorate(injectable(), MessageClass);
-
-    dependencies.forEach((dependency, index) => {
-      decorate(inject(dependency), MessageClass, index);
-    });
-
     container.bind(name).to(MessageClass).inSingletonScope();
     this.logger.success(`✅ Registered message: ${name}`);
   }
@@ -541,22 +472,18 @@ class ApplicationBootstrap {
       { eager: true },
     );
 
-    this.scheduler = new Scheduler();
+    // Register Scheduler with container and get instance from DI
+    if (!container.isBound(Scheduler)) {
+      container.bind(Scheduler).toSelf().inSingletonScope();
+    }
+
+    this.scheduler = container.get(Scheduler);
 
     for (const module of Object.values(jobModules)) {
       const JobClass = module?.default;
       if (!JobClass) continue;
 
       try {
-        const dependencies = this.resolveDependencies(JobClass);
-
-        // Apply decorators
-        decorate(injectable(), JobClass);
-
-        dependencies.forEach((dependency, index) => {
-          decorate(inject(dependency), JobClass, index);
-        });
-
         // Register with container
         const jobMetadata = Reflect.getMetadata('name', JobClass);
         const jobName = jobMetadata || JobClass.name;
