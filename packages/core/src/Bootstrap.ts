@@ -30,7 +30,7 @@ interface RegistrationResult {
 class ApplicationBootstrap {
   private readonly serviceDependencies = new Map<string, ServiceMetadata>();
   private readonly serviceRegistry = new Map<string, Newable<any>>();
-  private readonly logger = new BootstrapLogger();
+  private logger: BootstrapLogger = new BootstrapLogger();
   private readonly storeDefinitions: any[] = [];
 
   private scheduler: Scheduler | undefined;
@@ -38,10 +38,10 @@ class ApplicationBootstrap {
   /**
    * Add a store definition to be initialized
    */
-  public withStore(storeDefinition: any): ApplicationBootstrap {
-    if (storeDefinition && storeDefinition.name) {
+  public withStore(storeDefinition: { def: any; store: any; classes: any }): ApplicationBootstrap {
+    if (storeDefinition && storeDefinition.def && storeDefinition.store) {
       this.storeDefinitions.push(storeDefinition);
-      this.logger.debug(`📦 Added store definition: ${storeDefinition.name}`);
+      this.logger.debug(`📦 Added store definition: ${storeDefinition.def.name}`);
     }
     return this;
   }
@@ -50,9 +50,7 @@ class ApplicationBootstrap {
    * Add multiple store definitions to be initialized
    */
   public withStores(storeDefinitions: any[]): ApplicationBootstrap {
-    for (const store of storeDefinitions) {
-      this.withStore(store);
-    }
+    storeDefinitions.forEach((store) => this.withStore(store));
     return this;
   }
 
@@ -62,11 +60,14 @@ class ApplicationBootstrap {
   public async create({
     keepPortAlive = false,
     portName,
+    enableLogs = true,
   }: {
     keepPortAlive?: boolean;
     portName?: string;
+    enableLogs?: boolean;
   }): Promise<void> {
     try {
+      this.logger = new BootstrapLogger(enableLogs);
       this.logger.info('🚀 Starting Chroma application bootstrap...');
       await this.discoverAndInitializeStores();
 
@@ -121,7 +122,7 @@ class ApplicationBootstrap {
       const ServiceClass = module?.default;
       if (!ServiceClass || typeof ServiceClass !== 'function') {
         this.logger.warn(
-          `⚠️  Skipping invalid service module - no default export or not a constructor`,
+          `⚠️  Skipping invalid service module - no default export or not a constructor` + module,
         );
         continue;
       }
@@ -162,31 +163,25 @@ class ApplicationBootstrap {
 
       this.logger.info(`Initializing ${this.storeDefinitions.length} store(s)...`);
 
-      // Check if @chromahq/store is available in global registry
-      const chromaGlobal = (globalThis as any).__CHROMA__;
+      let isFirstStore = true;
 
-      if (chromaGlobal?.initStores && typeof chromaGlobal.initStores === 'function') {
-        let isFirstStore = true;
-        for (const store of this.storeDefinitions) {
-          const { classes, store: storeInstance } = await chromaGlobal.initStores(store);
-          // Bind store instance to DI container for injection
-          const diKey = `CentralStore:${store.name}`;
-          container.bind(diKey).toConstantValue(storeInstance);
+      for (const store of this.storeDefinitions) {
+        // Bind store instance to DI container for injection
+        const diKey = `CentralStore:${store.name}`;
+        const storeInstance = store.store;
+        const classes = store.classes;
+        container.bind(diKey).toConstantValue(storeInstance);
 
-          if (isFirstStore) {
-            container.bind(TOKENS.Store).toConstantValue(storeInstance);
-            isFirstStore = false;
-          }
-
-          this.registerMessageClass(classes.GetStoreStateMessage, `store:${store.name}:getState`);
-          this.registerMessageClass(classes.SetStoreStateMessage, `store:${store.name}:setState`);
-          this.registerMessageClass(
-            classes.SubscribeToStoreMessage,
-            `store:${store.name}:subscribe`,
-          );
-
-          this.logger.debug(`✅ Initialized store: ${store.name}`);
+        if (isFirstStore) {
+          container.bind(TOKENS.Store).toConstantValue(storeInstance);
+          isFirstStore = false;
         }
+
+        this.registerMessageClass(classes.GetStoreStateMessage, `store:${store.name}:getState`);
+        this.registerMessageClass(classes.SetStoreStateMessage, `store:${store.name}:setState`);
+        this.registerMessageClass(classes.SubscribeToStoreMessage, `store:${store.name}:subscribe`);
+
+        this.logger.debug(`✅ Initialized store: ${store.name}`);
       }
 
       this.logger.success(`✅ Initialized ${this.storeDefinitions.length} store(s)`);
@@ -509,30 +504,42 @@ class ApplicationBootstrap {
 }
 
 class BootstrapLogger {
+  private enableLogs: boolean;
+
+  constructor(enableLogs: boolean = true) {
+    this.enableLogs = enableLogs;
+  }
+
   info(message: string, context?: Record<string, any>): void {
+    if (!this.enableLogs) return;
     console.log(message);
     if (context) console.log('  ', context);
   }
 
   success(message: string): void {
+    if (!this.enableLogs) return;
     console.log(message);
   }
 
   warn(message: string): void {
+    if (!this.enableLogs) return;
     console.warn(message);
   }
 
   error(message: string, error?: Error): void {
+    if (!this.enableLogs) return;
     console.error(message);
     if (error) console.error('  ', error);
   }
 
   debug(message: string, context?: Record<string, any>): void {
+    if (!this.enableLogs) return;
     console.debug(message);
     if (context) console.debug('  ', context);
   }
 
   divider(): void {
+    if (!this.enableLogs) return;
     console.log('='.repeat(50));
   }
 }
@@ -541,14 +548,17 @@ class BootstrapLogger {
 export async function create({
   keepPortAlive = false,
   portName,
+  enableLogs = true,
 }: {
   keepPortAlive?: boolean;
   portName?: string;
+  enableLogs?: boolean;
 } = {}): Promise<void> {
   const bootstrap = new ApplicationBootstrap();
   await bootstrap.create({
     keepPortAlive,
     portName,
+    enableLogs,
   });
 }
 
@@ -582,10 +592,12 @@ class BootstrapBuilder {
   public async create({
     keepPortAlive = false,
     portName,
+    enableLogs = true,
   }: {
     keepPortAlive?: boolean;
     portName?: string;
+    enableLogs?: boolean;
   } = {}): Promise<void> {
-    await this.app.create({ keepPortAlive, portName });
+    await this.app.create({ keepPortAlive, portName, enableLogs });
   }
 }

@@ -19,7 +19,7 @@ import type { StoreDefinition } from './types.js';
 /**
  * Initialize a store from a store definition
  */
-async function init(storeDefinition: StoreDefinition): Promise<any> {
+export async function init(storeDefinition: StoreDefinition): Promise<any> {
   try {
     let builder = createStore(storeDefinition.name);
 
@@ -31,6 +31,7 @@ async function init(storeDefinition: StoreDefinition): Promise<any> {
     const store = await builder.create();
 
     return {
+      def: storeDefinition,
       store,
       classes: autoRegisterStoreHandlers(store),
     };
