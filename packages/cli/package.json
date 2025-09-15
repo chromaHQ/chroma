@@ -1,7 +1,7 @@
 {
   "private": true,
   "name": "@chroma/cli",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "Scaffold and manage Chroma-powered browser extensions",
   "bin": {
     "create-chroma-extension": "dist/index.js"
