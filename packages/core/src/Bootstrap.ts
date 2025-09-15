@@ -31,7 +31,11 @@ class ApplicationBootstrap {
   private readonly serviceDependencies = new Map<string, ServiceMetadata>();
   private readonly serviceRegistry = new Map<string, Newable<any>>();
   private logger: BootstrapLogger = new BootstrapLogger();
-  private readonly storeDefinitions: any[] = [];
+  private readonly storeDefinitions: {
+    def: any;
+    store: any;
+    classes: any;
+  }[] = [];
 
   private scheduler: Scheduler | undefined;
 
@@ -167,7 +171,7 @@ class ApplicationBootstrap {
 
       for (const store of this.storeDefinitions) {
         // Bind store instance to DI container for injection
-        const diKey = `CentralStore:${store.name}`;
+        const diKey = `CentralStore:${store.def.name}`;
         const storeInstance = store.store;
         const classes = store.classes;
         container.bind(diKey).toConstantValue(storeInstance);
@@ -177,11 +181,14 @@ class ApplicationBootstrap {
           isFirstStore = false;
         }
 
-        this.registerMessageClass(classes.GetStoreStateMessage, `store:${store.name}:getState`);
-        this.registerMessageClass(classes.SetStoreStateMessage, `store:${store.name}:setState`);
-        this.registerMessageClass(classes.SubscribeToStoreMessage, `store:${store.name}:subscribe`);
+        this.registerMessageClass(classes.GetStoreStateMessage, `store:${store.def.name}:getState`);
+        this.registerMessageClass(classes.SetStoreStateMessage, `store:${store.def.name}:setState`);
+        this.registerMessageClass(
+          classes.SubscribeToStoreMessage,
+          `store:${store.def.name}:subscribe`,
+        );
 
-        this.logger.debug(`✅ Initialized store: ${store.name}`);
+        this.logger.debug(`✅ Initialized store: ${store.def.name}`);
       }
 
       this.logger.success(`✅ Initialized ${this.storeDefinitions.length} store(s)`);
@@ -235,24 +242,11 @@ class ApplicationBootstrap {
     for (const param of parameters) {
       const paramName = param.toLowerCase();
       if (paramName === 'appstore') {
-        // Store dependency - we'll resolve this at runtime, not during discovery
         dependencies.push('appStore');
         continue;
       } else {
         continue;
       }
-
-      // // Otherwise, resolve as a service
-      // const matchingService = Array.from(this.serviceRegistry.entries()).find(
-      //   ([name]) => name.toLowerCase() === paramName,
-      // );
-      // if (matchingService) {
-      //   dependencies.push(matchingService[1]);
-      // } else {
-      //   this.logger.warn(`⚠️  No service found for parameter "${param}" in ${ServiceClass.name}`);
-      //   // Skip undefined dependencies instead of pushing them
-      //   continue;
-      // }
     }
 
     return dependencies;
