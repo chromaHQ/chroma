@@ -10,6 +10,8 @@ export const container = new Di({
   defaultScope: 'Singleton',
 });
 
+(container as any).id = Math.random().toString(36).substring(2, 15);
+
 export const bind = <T>(id: symbol | (new (...a: any[]) => T), cls: new (...a: any[]) => T) =>
   container
     .bind<T>(id as any)

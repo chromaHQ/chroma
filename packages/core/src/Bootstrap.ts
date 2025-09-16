@@ -2,7 +2,6 @@ import { container } from './di/Container';
 import { bootstrap as bridgeBootstrap } from './runtime/BridgeRuntime';
 import { JobRegistry, Scheduler } from './scheduler';
 import { IJob } from './scheduler/core/IJob';
-import { TOKENS } from './decorators/tokens';
 
 type Newable<T> = new (...args: any[]) => T;
 
@@ -21,6 +20,18 @@ interface RegistrationResult {
   readonly success: boolean;
   readonly message: string;
   readonly error?: Error;
+}
+
+interface DependencyNode {
+  readonly service: string;
+  readonly dependencies: string[];
+  readonly constructor: Newable<any>;
+}
+
+interface CircularDependencyDetectionResult {
+  readonly hasCircularDependencies: boolean;
+  readonly cycles: CircularDependency[];
+  readonly dependencyGraph: Map<string, DependencyNode>;
 }
 
 /**
@@ -45,7 +56,6 @@ class ApplicationBootstrap {
   public withStore(storeDefinition: { def: any; store: any; classes: any }): ApplicationBootstrap {
     if (storeDefinition && storeDefinition.def && storeDefinition.store) {
       this.storeDefinitions.push(storeDefinition);
-      this.logger.debug(`📦 Added store definition: ${storeDefinition.def.name}`);
     }
     return this;
   }
@@ -74,11 +84,11 @@ class ApplicationBootstrap {
       this.logger = new BootstrapLogger(enableLogs);
       this.logger.info('🚀 Starting Chroma application bootstrap...');
       await this.discoverAndInitializeStores();
-
       await this.discoverServices();
-      await this.validateDependencies();
-      await this.registerServices();
+      this.analyzeDependencies();
+
       await this.registerMessages();
+
       await this.registerJobs();
       await this.bootMessages();
       await this.bootServices();
@@ -121,38 +131,231 @@ class ApplicationBootstrap {
       { eager: true },
     );
 
-    // First pass: register service classes
+    // First pass: collect all service classes
+    const serviceClasses: Newable<any>[] = [];
     for (const module of Object.values(serviceModules)) {
       const ServiceClass = module?.default;
-      if (!ServiceClass || typeof ServiceClass !== 'function') {
-        this.logger.warn(
-          `⚠️  Skipping invalid service module - no default export or not a constructor` + module,
+      if (ServiceClass) {
+        serviceClasses.push(ServiceClass);
+        this.serviceRegistry.set(ServiceClass.name, ServiceClass);
+      }
+    }
+
+    // Second pass: detect circular dependencies before registration
+    const circularDepsResult = this.detectCircularDependencies(serviceClasses);
+
+    if (circularDepsResult.hasCircularDependencies) {
+      this.logger.error('💥 Circular dependencies detected!');
+      circularDepsResult.cycles.forEach((cycle, index) => {
+        this.logger.error(`Cycle ${index + 1}: ${cycle.cycle.join(' → ')} → ${cycle.cycle[0]}`);
+      });
+      throw new Error(`Circular dependencies found. Cannot initialize services.`);
+    }
+
+    // Third pass: register services if no circular dependencies
+    for (const ServiceClass of serviceClasses) {
+      container.bind(ServiceClass).toSelf().inSingletonScope();
+      this.logger.debug(`📦 Discovered service: ${ServiceClass.name}`);
+    }
+
+    this.logger.success(
+      `✅ Registered ${serviceClasses.length} services without circular dependencies`,
+    );
+  }
+
+  /**
+   * Detect circular dependencies in service classes using reflection
+   * Enhanced: logs all detected dependencies for debugging
+   */
+  private detectCircularDependencies(
+    serviceClasses: Newable<any>[],
+  ): CircularDependencyDetectionResult {
+    const dependencyGraph = new Map<string, DependencyNode>();
+
+    // Build dependency graph from constructor metadata
+    for (const ServiceClass of serviceClasses) {
+      const dependencies = this.extractDependencies(ServiceClass);
+      // Debug: log what dependencies are detected for each service
+      this.logger.debug(`[DependencyDetection] ${ServiceClass.name} dependencies:`, {
+        dependencies: dependencies.map((dep) =>
+          typeof dep === 'function' ? dep.name : typeof dep === 'string' ? dep : dep?.toString(),
+        ),
+      });
+      const dependencyNames = dependencies.map((dep) =>
+        typeof dep === 'function' ? dep.name : typeof dep === 'string' ? dep : dep?.toString(),
+      );
+      dependencyGraph.set(ServiceClass.name, {
+        service: ServiceClass.name,
+        dependencies: dependencyNames,
+        constructor: ServiceClass,
+      });
+    }
+
+    // Detect cycles using DFS
+    const cycles: CircularDependency[] = [];
+    const visited = new Set<string>();
+    const recursionStack = new Set<string>();
+    const currentPath: string[] = [];
+
+    for (const serviceName of dependencyGraph.keys()) {
+      if (!visited.has(serviceName)) {
+        this.detectCycles(
+          serviceName,
+          dependencyGraph,
+          visited,
+          recursionStack,
+          currentPath,
+          cycles,
         );
+      }
+    }
+
+    return {
+      hasCircularDependencies: cycles.length > 0,
+      cycles,
+      dependencyGraph,
+    };
+  }
+
+  /**
+   * Extract dependencies from constructor using reflect-metadata
+   * Fallback: parse constructor parameter names if metadata is missing
+   */
+  private extractDependencies(ServiceClass: Newable<any>): any[] {
+    try {
+      // Get constructor parameter types (preferred)
+      const paramTypes = Reflect.getMetadata('design:paramtypes', ServiceClass) || [];
+      // Get injected tokens from inversify metadata
+      const injectMetadata = Reflect.getMetadata('inversify:tagged', ServiceClass) || new Map();
+      const dependencies: any[] = [];
+
+      // Process each constructor parameter
+      for (let i = 0; i < paramTypes.length; i++) {
+        const paramType = paramTypes[i];
+        const paramMetadata = injectMetadata.get(i);
+        if (paramMetadata && paramMetadata.length > 0) {
+          // Use injected token if available
+          const injectTag = paramMetadata.find((tag: any) => tag.key === 'inject');
+          if (injectTag) {
+            dependencies.push(injectTag.value);
+          } else {
+            dependencies.push(paramType);
+          }
+        } else {
+          dependencies.push(paramType);
+        }
+      }
+
+      // Fallback: If no dependencies found, try to parse constructor parameter names
+      if (dependencies.length === 0) {
+        const paramNames = this.getConstructorParamNames(ServiceClass);
+        this.logger.debug(
+          `[DependencyDetection:FALLBACK] ${ServiceClass.name} constructor param names:`,
+          { paramNames },
+        );
+        return paramNames;
+      }
+
+      return dependencies.filter((dep) => dep && dep !== Object);
+    } catch (error) {
+      this.logger.debug(`Could not extract dependencies for ${ServiceClass.name}: ${error}`);
+      return [];
+    }
+  }
+
+  /**
+   * Fallback: Parse constructor parameter names from function source
+   */
+  private getConstructorParamNames(ServiceClass: Newable<any>): string[] {
+    const constructor = ServiceClass.prototype.constructor;
+    const src = constructor.toString();
+    // Match the constructor argument list
+    const match = src.match(/constructor\s*\(([^)]*)\)/);
+    if (!match) return [];
+    const params = match[1]
+      .split(',')
+      .map((p: string) => p.trim())
+      .filter((p: string) => p.length > 0);
+    return params;
+  }
+
+  /**
+   * Perform DFS to detect cycles in dependency graph
+   */
+  private detectCycles(
+    serviceName: string,
+    graph: Map<string, DependencyNode>,
+    visited: Set<string>,
+    recursionStack: Set<string>,
+    currentPath: string[],
+    cycles: CircularDependency[],
+  ): void {
+    visited.add(serviceName);
+    recursionStack.add(serviceName);
+    currentPath.push(serviceName);
+
+    const node = graph.get(serviceName);
+    if (!node) {
+      recursionStack.delete(serviceName);
+      currentPath.pop();
+      return;
+    }
+
+    for (const dependency of node.dependencies) {
+      // Skip primitive dependencies and external libraries
+      if (!graph.has(dependency)) {
         continue;
       }
 
-      this.serviceRegistry.set(ServiceClass.name, ServiceClass);
+      if (!visited.has(dependency)) {
+        this.detectCycles(dependency, graph, visited, recursionStack, currentPath, cycles);
+      } else if (recursionStack.has(dependency)) {
+        // Found a cycle
+        const cycleStartIndex = currentPath.indexOf(dependency);
+        const cycle = currentPath.slice(cycleStartIndex);
+
+        cycles.push({
+          cycle: [...cycle],
+          services: [...currentPath],
+        });
+      }
     }
 
-    // Second pass: analyze dependencies
-    for (const module of Object.values(serviceModules)) {
-      const ServiceClass = module?.default;
-      if (!ServiceClass || typeof ServiceClass !== 'function') continue;
+    recursionStack.delete(serviceName);
+    currentPath.pop();
+  }
 
-      const dependencies = this.resolveDependencies(ServiceClass);
+  /**
+   * Debug method to visualize the dependency graph
+   */
+  public analyzeDependencies(): void {
+    const serviceClasses = Array.from(this.serviceRegistry.values());
+    const result = this.detectCircularDependencies(serviceClasses);
 
-      this.serviceDependencies.set(ServiceClass.name, {
-        service: ServiceClass,
-        dependencies,
-        registered: false,
+    this.logger.info('📊 Dependency Analysis Report:');
+    this.logger.info(`Total Services: ${result.dependencyGraph.size}`);
+
+    if (result.hasCircularDependencies) {
+      this.logger.error(`🔄 Circular Dependencies Found: ${result.cycles.length}`);
+      result.cycles.forEach((cycle, index) => {
+        this.logger.error(`  Cycle ${index + 1}: ${cycle.cycle.join(' → ')} → ${cycle.cycle[0]}`);
       });
-
-      this.logger.debug(`📦 Discovered ${ServiceClass.name}`, {
-        dependencies: dependencies.map((dep) => dep.name),
-      });
+    } else {
+      this.logger.success('✅ No circular dependencies detected');
     }
 
-    this.logger.success(`✅ Discovered ${this.serviceDependencies.size} services`);
+    // Print dependency tree
+    this.logger.info('🌳 Service Dependency Tree:');
+    for (const [serviceName, node] of result.dependencyGraph) {
+      if (node.dependencies.length > 0) {
+        this.logger.info(`  ${serviceName} depends on:`);
+        node.dependencies.forEach((dep) => {
+          this.logger.info(`    - ${dep}`);
+        });
+      } else {
+        this.logger.info(`  ${serviceName} (no dependencies)`);
+      }
+    }
   }
 
   /**
@@ -177,7 +380,7 @@ class ApplicationBootstrap {
         container.bind(diKey).toConstantValue(storeInstance);
 
         if (isFirstStore) {
-          container.bind(TOKENS.Store).toConstantValue(storeInstance);
+          container.bind(Symbol.for('Store')).toConstantValue(storeInstance);
           isFirstStore = false;
         }
 
@@ -198,197 +401,6 @@ class ApplicationBootstrap {
   }
 
   /**
-   * Resolve service dependencies using reflection and fallback parsing
-   */
-  private resolveDependencies(ServiceClass: Newable<any>): Newable<any>[] {
-    // Try reflection metadata first
-    const paramTypes = Reflect.getMetadata('design:paramtypes', ServiceClass) || [];
-
-    if (paramTypes.length > 0) {
-      // Filter out invalid types and return valid dependencies
-      const validDependencies = paramTypes.filter((type: any) => {
-        return type && type !== Object && typeof type === 'function';
-      });
-
-      if (validDependencies.length > 0) {
-        return validDependencies;
-      }
-    }
-
-    // Fallback to constructor string parsing
-    if (ServiceClass.length > 0) {
-      return this.parseConstructorDependencies(ServiceClass);
-    }
-
-    return [];
-  }
-
-  /**
-   * Parse constructor dependencies from class string representation
-   */
-  private parseConstructorDependencies(ServiceClass: Newable<any>): Newable<any>[] {
-    const constructorString = ServiceClass.toString();
-    const constructorMatch = constructorString.match(/constructor\s*\(([^)]*)\)/);
-
-    if (!constructorMatch) return [];
-
-    const parameters = constructorMatch[1]
-      .split(',')
-      .map((param) => param.trim())
-      .filter((param) => param.length > 0);
-
-    const dependencies: any[] = [];
-
-    for (const param of parameters) {
-      const paramName = param.toLowerCase();
-      if (paramName === 'appstore') {
-        dependencies.push('appStore');
-        continue;
-      } else {
-        continue;
-      }
-    }
-
-    return dependencies;
-  }
-
-  /**
-   * Validate service dependencies and detect circular references
-   */
-  private async validateDependencies(): Promise<void> {
-    this.logger.info('🔍 Validating dependencies...');
-
-    const circularDependencies = this.detectCircularDependencies();
-
-    if (circularDependencies.length > 0) {
-      this.handleCircularDependencies(circularDependencies);
-    } else {
-      this.logger.success('✅ No circular dependencies detected');
-    }
-  }
-
-  /**
-   * Detect circular dependencies using depth-first search
-   */
-  private detectCircularDependencies(): CircularDependency[] {
-    const visited = new Set<string>();
-    const recursionStack = new Set<string>();
-    const circularDeps: CircularDependency[] = [];
-
-    const dfs = (serviceName: string, path: string[]): void => {
-      if (recursionStack.has(serviceName)) {
-        const cycleStart = path.indexOf(serviceName);
-        const cycle = path.slice(cycleStart).concat([serviceName]);
-
-        circularDeps.push({
-          cycle: Object.freeze(cycle),
-          services: Object.freeze(Array.from(new Set(cycle))),
-        });
-        return;
-      }
-
-      if (visited.has(serviceName)) return;
-
-      visited.add(serviceName);
-      recursionStack.add(serviceName);
-
-      const serviceMetadata = this.serviceDependencies.get(serviceName);
-      if (serviceMetadata) {
-        for (const dependency of serviceMetadata.dependencies) {
-          if (this.serviceDependencies.has(dependency.name)) {
-            dfs(dependency.name, [...path, serviceName]);
-          }
-        }
-      }
-
-      recursionStack.delete(serviceName);
-    };
-
-    for (const serviceName of this.serviceDependencies.keys()) {
-      if (!visited.has(serviceName)) {
-        dfs(serviceName, []);
-      }
-    }
-
-    return circularDeps;
-  }
-
-  /**
-   * Handle circular dependencies with detailed reporting
-   */
-  private handleCircularDependencies(circularDeps: CircularDependency[]): void {
-    this.logger.error('🔴 CIRCULAR DEPENDENCIES DETECTED');
-    this.logger.divider();
-
-    circularDeps.forEach((circular, index) => {
-      this.logger.error(`📍 Circular Dependency #${index + 1}:`);
-      this.logger.error(`   Cycle: ${circular.cycle.join(' → ')}`);
-      this.logger.error(`   Affected Services: ${circular.services.join(', ')}`);
-
-      this.logger.info('   💡 Resolution Suggestions:');
-      this.logger.info('      • Extract shared functionality into a separate service');
-      this.logger.info('      • Use interfaces or abstractions to break the cycle');
-      this.logger.info('      • Consider Factory or Provider patterns');
-      this.logger.info('      • Move shared logic to utility classes');
-    });
-
-    this.logger.divider();
-    this.logger.warn('⚠️  Application will continue but some services may fail to resolve');
-    this.logger.warn('   Please address these circular dependencies for optimal functionality');
-  }
-
-  /**
-   * Register all services with the dependency injection container
-   */
-  private async registerServices(): Promise<void> {
-    this.logger.info('🔧 Registering services...');
-
-    for (const serviceName of this.serviceDependencies.keys()) {
-      await this.registerService(serviceName);
-    }
-  }
-
-  /**
-   * Register a single service with dependency resolution
-   */
-  private async registerService(
-    serviceName: string,
-    visitedServices = new Set<string>(),
-    registrationPath: string[] = [],
-  ): Promise<RegistrationResult> {
-    const serviceMetadata = this.serviceDependencies.get(serviceName);
-
-    if (!serviceMetadata) {
-      return { success: false, message: `Service ${serviceName} not found` };
-    }
-
-    if (serviceMetadata.registered) {
-      return { success: true, message: `Service ${serviceName} already registered` };
-    }
-
-    try {
-      const ServiceClass = serviceMetadata.service;
-
-      // Validate that ServiceClass exists and is a constructor function
-      if (!ServiceClass || typeof ServiceClass !== 'function') {
-        const errorMessage = `Invalid service class for ${serviceName}`;
-        this.logger.error(`❌ ${errorMessage}`);
-        return { success: false, message: errorMessage };
-      }
-
-      // Bind to container
-      container.bind(ServiceClass).toSelf().inSingletonScope();
-      serviceMetadata.registered = true;
-      this.logger.success(`✅ Registered service: ${ServiceClass.name}`);
-      return { success: true, message: `Successfully registered ${ServiceClass.name}` };
-    } catch (error) {
-      const errorMessage = `Failed to register ${serviceName}`;
-      this.logger.error(`❌ ${errorMessage}:`, error as any);
-      return { success: false, message: errorMessage, error: error as Error };
-    }
-  }
-
-  /**
    * Register message handlers
    */
   private async registerMessages(): Promise<void> {
@@ -399,12 +411,44 @@ class ApplicationBootstrap {
       { eager: true },
     );
 
+    // Collect all message classes
+    const messageClasses: Newable<any>[] = [];
+    for (const module of Object.values(messageModules)) {
+      const MessageClass = module?.default;
+      if (MessageClass) messageClasses.push(MessageClass);
+    }
+
+    // Detect circular dependencies in messages
+    if (messageClasses.length > 0) {
+      const circularDepsResult = this.detectCircularDependencies(messageClasses);
+      if (circularDepsResult.hasCircularDependencies) {
+        this.logger.error('💥 Circular dependencies detected in messages!');
+        circularDepsResult.cycles.forEach((cycle, index) => {
+          this.logger.error(
+            `Message Cycle ${index + 1}: ${cycle.cycle.join(' → ')} → ${cycle.cycle[0]}`,
+          );
+        });
+        throw new Error(`Circular dependencies found in messages. Cannot register messages.`);
+      }
+    }
+
     for (const module of Object.values(messageModules)) {
       const MessageClass = module?.default;
       if (!MessageClass) continue;
 
       try {
-        // Register with container
+        // check all service registry is available
+        for (const [name, ServiceClass] of this.serviceRegistry) {
+          if (!ServiceClass) {
+            this.logger.warn(`⚠️ Service not found in registry: ${name}`);
+          }
+
+          // check if in container
+          if (!container.isBound(ServiceClass)) {
+            this.logger.warn(`⚠️ Service not bound in container: ${name}`);
+          }
+        }
+
         const messageMetadata = Reflect.getMetadata('name', MessageClass);
         const messageName = messageMetadata || MessageClass.name;
         container.bind(messageName).to(MessageClass).inSingletonScope();
@@ -466,6 +510,23 @@ class ApplicationBootstrap {
       container.bind(Scheduler).toSelf().inSingletonScope();
     }
 
+    console.log('container isBound(Scheduler)', container.isBound(Scheduler));
+
+    // check all service registry is available
+    for (const [name, ServiceClass] of this.serviceRegistry) {
+      if (!ServiceClass) {
+        this.logger.warn(`⚠️ Service not found in registry: ${name}`);
+      }
+
+      // check if in container
+      if (!container.isBound(ServiceClass)) {
+        this.logger.warn(`⚠️ Service not bound in container: ${name}`);
+      } else {
+        container.get(ServiceClass);
+        console.log('got service', name);
+      }
+    }
+
     this.scheduler = container.get(Scheduler);
 
     for (const module of Object.values(jobModules)) {
@@ -473,7 +534,6 @@ class ApplicationBootstrap {
       if (!JobClass) continue;
 
       try {
-        // Register with container
         const jobMetadata = Reflect.getMetadata('name', JobClass);
         const jobName = jobMetadata || JobClass.name;
         container.bind(JobClass).toSelf().inSingletonScope();

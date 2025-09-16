@@ -103,11 +103,12 @@ class BridgeRuntimeManager {
     }
 
     this.setupPortListener();
+
     if (this.keepAlive) {
       this.startKeepAlive();
     }
+
     this.isInitialized = true;
-    this.logger.success(`🌉 Bridge runtime initialized on port: ${this.portName}`);
   }
 
   /**
@@ -388,7 +389,6 @@ class BridgeLogger {
 
 export function bootstrap(options: BridgeRuntimeOptions): void {
   const runtime = new BridgeRuntimeManager(options);
-  console.debug('🌉 Initializing Bridge Runtime with options:', options);
   runtime.initialize();
 }
 
