@@ -5,14 +5,24 @@ import { JobOptions } from '../core/JobOptions';
 import { IJob, JobState } from '../core/IJob';
 import { getNextCronDate } from '../support/cron';
 import { container } from '../../di/Container';
+import { Logger } from '../../interfaces/Logger';
 
 export class Scheduler {
   private readonly registry = JobRegistry.instance;
   private readonly alarm = new AlarmAdapter();
   private readonly timeout = new TimeoutAdapter();
+  private readonly logger: Logger;
 
-  constructor() {
-    console.log('Scheduler initialized');
+  constructor(logger?: Logger) {
+    this.logger = logger || {
+      info: console.log,
+      success: console.log,
+      warn: console.warn,
+      error: console.error,
+      debug: console.debug,
+    };
+
+    this.logger.info('Scheduler initialized');
     this.alarm.onTrigger(this.execute.bind(this));
     this.timeout.onTrigger(this.execute.bind(this));
   }
@@ -20,11 +30,9 @@ export class Scheduler {
   schedule(id: string, options: JobOptions) {
     const context = this.registry.getContext(id);
     if (!context || context.isStopped()) {
-      console.log(`Job ${id} is stopped, skipping schedule`);
       return;
     }
 
-    console.log(`Scheduling job ${id} with options:`, options);
     const when = this.getScheduleTime(options);
 
     const adapter = when - Date.now() < 60_000 ? this.timeout : this.alarm;
@@ -36,12 +44,12 @@ export class Scheduler {
   }
 
   pause(id: string): void {
-    console.log(`Pausing job ${id}`);
+    this.logger.info(`Pausing job ${id}`);
     this.registry.pause(id);
   }
 
   resume(id: string): void {
-    console.log(`Resuming job ${id}`);
+    this.logger.info(`Resuming job ${id}`);
     this.registry.resume(id);
 
     const options = this.registry.meta(id);
@@ -52,7 +60,7 @@ export class Scheduler {
   }
 
   stop(id: string): void {
-    console.log(`Stopping job ${id}`);
+    this.logger.info(`Stopping job ${id}`);
     this.registry.stop(id);
   }
 
@@ -61,23 +69,23 @@ export class Scheduler {
     const context = this.registry.getContext(id);
 
     if (!job || !context) {
-      console.log(`Job ${id} not found or no context`);
+      this.logger.debug(`Job ${id} not found or no context`);
       return;
     }
 
     if (context.isPaused() || context.isStopped()) {
-      console.log(`Job ${id} is paused or stopped, skipping execution`);
+      this.logger.debug(`Job ${id} is paused or stopped, skipping execution`);
       return;
     }
 
     try {
       this.registry.updateState(id, JobState.RUNNING);
-      console.log(`Executing job ${id}`);
+      this.logger.info(`Executing job ${id}`);
 
       // get job instance from container
       const jobInstance = container.get(id) as IJob;
 
-      console.log(jobInstance);
+      this.logger.debug('Job instance:', { jobInstance });
       await jobInstance.handle.bind(jobInstance).call(jobInstance, context);
 
       if (!context.isStopped() && !context.isPaused()) {
@@ -91,7 +99,7 @@ export class Scheduler {
         }
       }
     } catch (error) {
-      console.error(`Job ${id} execution failed:`, error);
+      this.logger.error(`Job ${id} execution failed:`, error as Error);
       context.fail(error as Error);
     }
   }

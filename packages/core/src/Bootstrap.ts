@@ -2,6 +2,7 @@ import { container } from './di/Container';
 import { bootstrap as bridgeBootstrap } from './runtime/BridgeRuntime';
 import { JobRegistry, Scheduler } from './scheduler';
 import { IJob } from './scheduler/core/IJob';
+import { Logger } from './interfaces/Logger';
 
 type Newable<T> = new (...args: any[]) => T;
 
@@ -41,7 +42,7 @@ interface CircularDependencyDetectionResult {
 class ApplicationBootstrap {
   private readonly serviceDependencies = new Map<string, ServiceMetadata>();
   private readonly serviceRegistry = new Map<string, Newable<any>>();
-  private logger: BootstrapLogger = new BootstrapLogger();
+  private logger: Logger = new BootstrapLogger();
   private readonly storeDefinitions: {
     def: any;
     store: any;
@@ -105,7 +106,6 @@ class ApplicationBootstrap {
    */
   private async bootServices(): Promise<void> {
     this.logger.info('🚀 Booting services...');
-    console.log('services', this.serviceRegistry.entries());
     for (const [serviceName, ServiceClass] of this.serviceRegistry.entries()) {
       try {
         const instance = container.get(ServiceClass);
@@ -507,10 +507,13 @@ class ApplicationBootstrap {
 
     // Register Scheduler with container and get instance from DI
     if (!container.isBound(Scheduler)) {
-      container.bind(Scheduler).toSelf().inSingletonScope();
+      container
+        .bind(Scheduler)
+        .toDynamicValue(() => new Scheduler(this.logger))
+        .inSingletonScope();
     }
 
-    console.log('container isBound(Scheduler)', container.isBound(Scheduler));
+    this.logger.debug('container isBound(Scheduler)', { isBound: container.isBound(Scheduler) });
 
     // check all service registry is available
     for (const [name, ServiceClass] of this.serviceRegistry) {
@@ -523,7 +526,6 @@ class ApplicationBootstrap {
         this.logger.warn(`⚠️ Service not bound in container: ${name}`);
       } else {
         container.get(ServiceClass);
-        console.log('got service', name);
       }
     }
 
@@ -557,7 +559,7 @@ class ApplicationBootstrap {
   }
 }
 
-class BootstrapLogger {
+class BootstrapLogger implements Logger {
   private enableLogs: boolean;
 
   constructor(enableLogs: boolean = true) {

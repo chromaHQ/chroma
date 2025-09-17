@@ -39,7 +39,6 @@ export class BridgeStore<T> implements CentralStore<T> {
 
   public initialize = async () => {
     try {
-      console.log('Initializing bridge store:', this.storeName, this.bridge);
       // Get initial state from service worker
       const state = await this.bridge.send<void, T>(`store:${this.storeName}:getState`);
       this.previousState = this.currentState;
