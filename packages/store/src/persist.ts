@@ -1,7 +1,9 @@
 import type { StateCreator } from 'zustand';
 import type { PersistOptions } from './types.js';
 
-export function chromeStoragePersist<S>(options: PersistOptions) {
+export function chromeStoragePersist<S>(
+  options: PersistOptions & { onReady?: () => void } = {} as any,
+) {
   return (config: StateCreator<S>): StateCreator<S> =>
     (set, get, store) => {
       const key = options.name;
@@ -44,6 +46,10 @@ export function chromeStoragePersist<S>(options: PersistOptions) {
         } finally {
           isInitialized = true;
           setupPersistence();
+          // Notify that persistence is ready
+          if (options.onReady) {
+            options.onReady();
+          }
         }
       };
 

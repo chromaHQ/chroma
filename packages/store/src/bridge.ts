@@ -24,6 +24,7 @@ export class BridgeStore<T> implements CentralStore<T> {
   private previousState: T | null = null;
   private storeName: string;
   private ready: boolean = false;
+  private readyCallbacks = new Set<() => void>();
 
   constructor(bridge: BridgeWithEvents, initialState?: T, storeName = 'default') {
     this.bridge = bridge;
@@ -45,6 +46,7 @@ export class BridgeStore<T> implements CentralStore<T> {
       this.currentState = state;
       this.notifyListeners();
       this.ready = true;
+      this.notifyReady();
     } catch (error) {
       console.warn('Failed to initialize bridge store:', error);
     }
@@ -140,6 +142,30 @@ export class BridgeStore<T> implements CentralStore<T> {
 
   getInitialState = (): T => {
     return this.getState();
+  };
+
+  isReady = (): boolean => {
+    return this.ready;
+  };
+
+  onReady = (callback: () => void): (() => void) => {
+    if (this.ready) {
+      // If already ready, call immediately
+      callback();
+    } else {
+      // Otherwise, add to callbacks
+      this.readyCallbacks.add(callback);
+    }
+
+    // Return unsubscribe function
+    return () => {
+      this.readyCallbacks.delete(callback);
+    };
+  };
+
+  private notifyReady = () => {
+    this.readyCallbacks.forEach((callback) => callback());
+    this.readyCallbacks.clear();
   };
 }
 

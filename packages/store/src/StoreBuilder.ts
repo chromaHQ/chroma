@@ -54,13 +54,22 @@ export class StoreBuilder<T = any> {
     const bridge = this.config.bridge || (globalThis as any).bridge;
 
     if (bridge) {
-      createBridgeStore<T>(bridge, undefined, this.config.name);
+      return createBridgeStore<T>(bridge, undefined, this.config.name);
     }
 
     return this.createServiceWorkerStore();
   }
 
   private createServiceWorkerStore(): CentralStore<T> {
+    let isReady = false;
+    const readyCallbacks = new Set<() => void>();
+
+    const notifyReady = () => {
+      isReady = true;
+      readyCallbacks.forEach((callback) => callback());
+      readyCallbacks.clear();
+    };
+
     const creator: StateCreator<T> = (set, get, store) => {
       let state = {} as T;
 
@@ -72,11 +81,28 @@ export class StoreBuilder<T = any> {
       return state;
     };
 
-    const persistOptions = { name: this.config.name };
+    const persistOptions = {
+      name: this.config.name,
+      onReady: notifyReady,
+    };
     const persistedCreator = chromeStoragePersist<T>(persistOptions)(creator);
 
     const store = createZustandStore<T>(persistedCreator);
-    const centralStore = store as CentralStore<T>;
+
+    // Extend the store with ready functionality
+    const centralStore = Object.assign(store, {
+      isReady: () => isReady,
+      onReady: (callback: () => void) => {
+        if (isReady) {
+          callback();
+        } else {
+          readyCallbacks.add(callback);
+        }
+        return () => {
+          readyCallbacks.delete(callback);
+        };
+      },
+    }) as CentralStore<T>;
 
     return centralStore;
   }
