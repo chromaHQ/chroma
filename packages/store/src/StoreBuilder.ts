@@ -51,7 +51,7 @@ export class StoreBuilder<T = any> {
   }
 
   private async createBaseStore(): Promise<CentralStore<T>> {
-    const bridge = this.config.bridge || (globalThis as any).bridge;
+    const bridge = this.config.bridge;
 
     if (bridge) {
       return createBridgeStore<T>(bridge, undefined, this.config.name);
@@ -85,6 +85,7 @@ export class StoreBuilder<T = any> {
       name: this.config.name,
       onReady: notifyReady,
     };
+
     const persistedCreator = chromeStoragePersist<T>(persistOptions)(creator);
 
     const store = createZustandStore<T>(persistedCreator);

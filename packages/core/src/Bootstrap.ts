@@ -86,7 +86,13 @@ class ApplicationBootstrap {
       this.logger.info('🚀 Starting Chroma application bootstrap...');
       await this.discoverAndInitializeStores();
       await this.discoverServices();
-      this.analyzeDependencies();
+
+      const store = this.storeDefinitions[0].store;
+
+      if (!store.isReady()) {
+        this.logger.debug('Waiting for store to be ready...');
+        await new Promise((resolve) => store.onReady(resolve));
+      }
 
       await this.registerMessages();
 
@@ -133,6 +139,7 @@ class ApplicationBootstrap {
 
     // First pass: collect all service classes
     const serviceClasses: Newable<any>[] = [];
+
     for (const module of Object.values(serviceModules)) {
       const ServiceClass = module?.default;
       if (ServiceClass) {
