@@ -87,7 +87,7 @@ class BridgeRuntimeManager {
   constructor(options: BridgeRuntimeOptions) {
     this.container = options.container;
     this.portName = options.portName ?? DEFAULT_PORT_NAME;
-    this.enableLogging = options.enableLogging ?? true;
+    this.enableLogging = options.enableLogging ?? false;
     this.errorHandler = options.errorHandler ?? new DefaultErrorHandler();
     this.logger = new BridgeLogger(this.enableLogging);
     this.keepAlive = options.keepAlive ?? false;
