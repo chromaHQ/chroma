@@ -1,7 +1,7 @@
 {
   "name": "chroma-monorepo",
   "private": true,
-  "packageManager": "pnpm@10.17.1",
+  "packageManager": "pnpm@10.12.1",
   "scripts": {
     "build-core": "pnpm --filter @chromahq/core build",
     "build-manifest": "pnpm --filter @chromahq/manifest build",
