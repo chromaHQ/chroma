@@ -97,8 +97,8 @@ class ApplicationBootstrap {
       }
 
       await this.registerMessages();
-
       await this.registerJobs();
+      bridgeBootstrap({ container, keepAlive: keepPortAlive, portName });
 
       if (!disableBootMethods) {
         await this.bootMessages();
@@ -106,7 +106,6 @@ class ApplicationBootstrap {
       }
 
       this.logger.success('🎉 Chroma application initialization complete!');
-      bridgeBootstrap({ container, keepAlive: keepPortAlive, portName });
     } catch (error) {
       this.logger.error('💥 Application bootstrap failed:', error as any);
       throw error;
@@ -117,18 +116,26 @@ class ApplicationBootstrap {
    */
   private async bootServices(): Promise<void> {
     this.logger.info('🚀 Booting services...');
-    for (const [serviceName, ServiceClass] of this.serviceRegistry.entries()) {
-      try {
-        const instance = container.get(ServiceClass);
 
-        if (typeof instance.onBoot === 'function') {
-          await instance.onBoot();
-          this.logger.success(`Booted service: ${serviceName}`);
+    const bootPromises = Array.from(this.serviceRegistry.entries()).map(
+      async ([serviceName, ServiceClass]) => {
+        try {
+          const instance = container.get(ServiceClass);
+
+          if (typeof instance.onBoot === 'function') {
+            await instance.onBoot();
+            this.logger.success(`Booted service: ${serviceName}`);
+            return { serviceName, success: true };
+          }
+          return { serviceName, success: true, skipped: true };
+        } catch (error) {
+          this.logger.error(`Failed to boot service ${serviceName}:`, error as any);
+          return { serviceName, success: false, error };
         }
-      } catch (error) {
-        this.logger.error(`Failed to boot service ${serviceName}:`, error as any);
-      }
-    }
+      },
+    );
+
+    await Promise.all(bootPromises);
   }
 
   /**
@@ -488,10 +495,12 @@ class ApplicationBootstrap {
       { eager: true },
     );
 
-    for (const module of Object.values(messageModules)) {
+    const bootPromises = Object.values(messageModules).map(async (module) => {
       const MessageClass = module?.default;
 
-      if (!MessageClass || typeof MessageClass.prototype.boot !== 'function') continue;
+      if (!MessageClass || typeof MessageClass.prototype.boot !== 'function') {
+        return { skipped: true };
+      }
 
       try {
         const messageMetadata = Reflect.getMetadata('name', MessageClass);
@@ -500,10 +509,14 @@ class ApplicationBootstrap {
 
         await messageInstance.boot();
         this.logger.success(`✅ Booted message: ${messageName}`);
+        return { messageName, success: true };
       } catch (error) {
         this.logger.error(`❌ Failed to boot message ${MessageClass.name}:`, error as any);
+        return { messageName: MessageClass.name, success: false, error };
       }
-    }
+    });
+
+    await Promise.all(bootPromises);
   }
 
   /**

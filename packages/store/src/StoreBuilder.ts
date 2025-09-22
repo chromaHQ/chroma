@@ -17,6 +17,7 @@ const readyCallbacks = new Set<() => void>();
  */
 export class StoreBuilder<T = any> {
   private config: StoreConfig;
+  private onReadyCallbacks = new Set<() => void>();
 
   constructor(name: string = 'default') {
     this.config = {
@@ -34,7 +35,7 @@ export class StoreBuilder<T = any> {
   }
 
   onReady(callback: () => void): this {
-    readyCallbacks.add(callback);
+    this.onReadyCallbacks.add(callback);
     return this;
   }
 
@@ -61,7 +62,7 @@ export class StoreBuilder<T = any> {
     const bridge = this.config.bridge;
 
     if (bridge) {
-      return createBridgeStore<T>(bridge, undefined, this.config.name);
+      return createBridgeStore<T>(bridge, undefined, this.config.name, this.onReadyCallbacks);
     }
 
     return this.createServiceWorkerStore();

@@ -29,12 +29,18 @@ export class BridgeStore<T> implements CentralStore<T> {
   private initializationAttempts: number = 0;
   private readonly maxInitializationAttempts: number = 10;
 
-  constructor(bridge: BridgeWithEvents, initialState?: T, storeName = 'default') {
+  constructor(
+    bridge: BridgeWithEvents,
+    initialState?: T,
+    storeName = 'default',
+    readyCallbacks: Set<() => void> = new Set(),
+  ) {
     this.bridge = bridge;
     this.currentState = initialState || null;
     this.previousState = initialState || null;
     this.initialState = initialState || null;
     this.storeName = storeName;
+    this.readyCallbacks = readyCallbacks;
 
     console.debug(
       `BridgeStore[${this.storeName}]: Creating with bridge connected:`,
@@ -274,6 +280,7 @@ export function createBridgeStore<T>(
   bridge: BridgeWithEvents,
   initialState?: T,
   storeName = 'default',
+  readyCallbacks: Set<() => void> = new Set(),
 ): CentralStore<T> {
-  return new BridgeStore<T>(bridge, initialState, storeName);
+  return new BridgeStore<T>(bridge, initialState, storeName, readyCallbacks);
 }
