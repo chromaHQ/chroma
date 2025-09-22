@@ -39,4 +39,5 @@ export type MergeSlices<Slices extends readonly StateCreator<any, [], [], any>[]
 export interface CentralStore<T> extends StoreApi<T> {
   isReady: () => boolean;
   onReady: (callback: () => void) => () => void;
+  reset: () => void;
 }

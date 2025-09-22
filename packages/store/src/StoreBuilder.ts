@@ -63,6 +63,7 @@ export class StoreBuilder<T = any> {
   private createServiceWorkerStore(): CentralStore<T> {
     let isReady = false;
     const readyCallbacks = new Set<() => void>();
+    let initialState: T | null = null;
 
     const notifyReady = () => {
       isReady = true;
@@ -76,6 +77,11 @@ export class StoreBuilder<T = any> {
       for (const slice of this.config.slices) {
         const sliceState = slice(set, get, store);
         state = { ...state, ...sliceState };
+      }
+
+      // Store initial state for reset functionality
+      if (initialState === null) {
+        initialState = { ...state };
       }
 
       return state;
@@ -93,6 +99,13 @@ export class StoreBuilder<T = any> {
     // Extend the store with ready functionality
     const centralStore = Object.assign(store, {
       isReady: () => isReady,
+      reset: () => {
+        if (initialState !== null) {
+          store.setState(initialState, true); // replace entire state
+        } else {
+          console.warn('ServiceWorkerStore: Cannot reset, initial state not available');
+        }
+      },
       onReady: (callback: () => void) => {
         if (isReady) {
           callback();

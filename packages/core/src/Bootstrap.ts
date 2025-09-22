@@ -76,10 +76,12 @@ class ApplicationBootstrap {
     keepPortAlive = false,
     portName,
     enableLogs = true,
+    disableBootMethods = false,
   }: {
     keepPortAlive?: boolean;
     portName?: string;
     enableLogs?: boolean;
+    disableBootMethods?: boolean;
   }): Promise<void> {
     try {
       this.logger = new BootstrapLogger(enableLogs);
@@ -97,8 +99,11 @@ class ApplicationBootstrap {
       await this.registerMessages();
 
       await this.registerJobs();
-      await this.bootMessages();
-      await this.bootServices();
+
+      if (!disableBootMethods) {
+        await this.bootMessages();
+        await this.bootServices();
+      }
 
       this.logger.success('🎉 Chroma application initialization complete!');
       bridgeBootstrap({ container, keepAlive: keepPortAlive, portName });
@@ -612,16 +617,19 @@ export async function create({
   keepPortAlive = false,
   portName,
   enableLogs = true,
+  disableBootMethods = false,
 }: {
   keepPortAlive?: boolean;
   portName?: string;
   enableLogs?: boolean;
+  disableBootMethods?: boolean;
 } = {}): Promise<void> {
   const bootstrap = new ApplicationBootstrap();
   await bootstrap.create({
     keepPortAlive,
     portName,
     enableLogs,
+    disableBootMethods,
   });
 }
 
@@ -656,11 +664,13 @@ class BootstrapBuilder {
     keepPortAlive = false,
     portName,
     enableLogs = true,
+    disableBootMethods = false,
   }: {
     keepPortAlive?: boolean;
     portName?: string;
     enableLogs?: boolean;
+    disableBootMethods?: boolean;
   } = {}): Promise<void> {
-    await this.app.create({ keepPortAlive, portName, enableLogs });
+    await this.app.create({ keepPortAlive, portName, enableLogs, disableBootMethods });
   }
 }

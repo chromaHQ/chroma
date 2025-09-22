@@ -22,6 +22,7 @@ export class BridgeStore<T> implements CentralStore<T> {
   private listeners = new Set<(state: T, prevState: T) => void>();
   private currentState: T | null = null;
   private previousState: T | null = null;
+  private initialState: T | null = null;
   private storeName: string;
   private ready: boolean = false;
   private readyCallbacks = new Set<() => void>();
@@ -30,6 +31,7 @@ export class BridgeStore<T> implements CentralStore<T> {
     this.bridge = bridge;
     this.currentState = initialState || null;
     this.previousState = initialState || null;
+    this.initialState = initialState || null;
     this.storeName = storeName;
 
     // Listen for state changes from service worker
@@ -44,6 +46,10 @@ export class BridgeStore<T> implements CentralStore<T> {
       const state = await this.bridge.send<void, T>(`store:${this.storeName}:getState`);
       this.previousState = this.currentState;
       this.currentState = state;
+      // Store initial state for reset functionality
+      if (this.initialState === null) {
+        this.initialState = state;
+      }
       this.notifyListeners();
       this.ready = true;
       this.notifyReady();
@@ -161,6 +167,22 @@ export class BridgeStore<T> implements CentralStore<T> {
     return () => {
       this.readyCallbacks.delete(callback);
     };
+  };
+
+  reset = (): void => {
+    if (this.initialState !== null) {
+      // Send reset command to service worker
+      this.bridge.send(`store:${this.storeName}:reset`).catch((error: any) => {
+        console.error('Failed to reset state via bridge:', error);
+      });
+
+      // Optimistic reset for immediate UI feedback
+      this.previousState = this.currentState;
+      this.currentState = { ...this.initialState };
+      this.notifyListeners();
+    } else {
+      console.warn('BridgeStore: Cannot reset, initial state not available');
+    }
   };
 
   private notifyReady = () => {
