@@ -40,12 +40,3 @@ export async function init(storeDefinition: StoreDefinition): Promise<any> {
     throw error;
   }
 }
-
-// Register the init function globally for @chromahq/core to discover
-if (typeof globalThis !== 'undefined') {
-  (globalThis as any).__CHROMA__ = (globalThis as any).__CHROMA__ || {};
-  (globalThis as any).__CHROMA__.initStores = init;
-
-  // Also register as a simple global function for fallback
-  (globalThis as any).initStores = init;
-}

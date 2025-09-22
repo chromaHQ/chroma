@@ -10,6 +10,8 @@ interface StoreConfig {
   persistence?: PersistOptions;
 }
 
+const readyCallbacks = new Set<() => void>();
+
 /**
  * Core store builder with fluent API
  */
@@ -28,6 +30,11 @@ export class StoreBuilder<T = any> {
    */
   withSlices(...slices: StateCreator<any, [], [], any>[]): this {
     this.config.slices = [...this.config.slices, ...slices];
+    return this;
+  }
+
+  onReady(callback: () => void): this {
+    readyCallbacks.add(callback);
     return this;
   }
 
@@ -62,7 +69,6 @@ export class StoreBuilder<T = any> {
 
   private createServiceWorkerStore(): CentralStore<T> {
     let isReady = false;
-    const readyCallbacks = new Set<() => void>();
     let initialState: T | null = null;
 
     const notifyReady = () => {
