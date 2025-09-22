@@ -98,7 +98,16 @@ class ApplicationBootstrap {
 
       await this.registerMessages();
       await this.registerJobs();
-      bridgeBootstrap({ container, keepAlive: keepPortAlive, portName });
+
+      // Initialize bridge runtime for message handling
+      const runtime = bridgeBootstrap({
+        container,
+        portName,
+        enableLogging: enableLogs,
+        keepAlive: keepPortAlive,
+      });
+
+      store.setBridge(runtime);
 
       if (!disableBootMethods) {
         await this.bootMessages();
@@ -405,10 +414,6 @@ class ApplicationBootstrap {
 
         this.registerMessageClass(classes.GetStoreStateMessage, `store:${store.def.name}:getState`);
         this.registerMessageClass(classes.SetStoreStateMessage, `store:${store.def.name}:setState`);
-        this.registerMessageClass(
-          classes.SubscribeToStoreMessage,
-          `store:${store.def.name}:subscribe`,
-        );
 
         this.logger.debug(`✅ Initialized store: ${store.def.name}`);
       }

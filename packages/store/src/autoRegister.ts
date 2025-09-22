@@ -1,6 +1,9 @@
 import type { CentralStore } from './types.js';
 
-export function autoRegisterStoreHandlers<T>(store: CentralStore<T>) {
+export function autoRegisterStoreHandlers<T>(
+  store: CentralStore<T>,
+  storeName: string = 'default',
+) {
   // Validate store immediately
   if (!store) {
     throw new Error('autoRegisterStoreHandlers: store parameter is required');
@@ -30,9 +33,9 @@ export function autoRegisterStoreHandlers<T>(store: CentralStore<T>) {
       if (args.length === 1 && args[0] && typeof args[0] === 'object') {
         const payload = args[0];
 
-        if ('partial' in payload && 'replace' in payload) {
+        if ('partial' in payload) {
           // Standard format: { partial, replace }
-          ({ partial, replace } = payload);
+          ({ partial, replace = false } = payload);
         } else {
           // Direct state update (payload is the state itself)
           partial = payload;
@@ -60,25 +63,16 @@ export function autoRegisterStoreHandlers<T>(store: CentralStore<T>) {
         store.setState(partial);
       }
 
-      return store.getState();
+      const updatedState = store.getState();
+
+      // No need to broadcast here - the store subscription will handle broadcasting
+      return updatedState;
     }
   }
 
-  class AutoSubscribeToStoreMessage {
-    handle(): void {
-      if (!store) {
-        throw new Error('Store instance not available');
-      }
-
-      // When UI subscribes, setup broadcasting
-      store.subscribe((state: T, prevState: T) => {
-        // Broadcasting is handled automatically by chroma's bridge system
-      });
-    }
-  } // Return the registered message classes for reference (if needed)
+  // Return the registered message classes for reference (if needed)
   return {
     GetStoreStateMessage: AutoGetStoreStateMessage,
     SetStoreStateMessage: AutoSetStoreStateMessage,
-    SubscribeToStoreMessage: AutoSubscribeToStoreMessage,
   };
 }

@@ -4,6 +4,9 @@ type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
 interface Bridge {
   send: <Req = unknown, Res = unknown>(key: string, payload?: Req) => Promise<Res>;
+  broadcast: (key: string, payload: any) => void;
+  on: (key: string, handler: (payload: any) => void) => void;
+  off: (key: string, handler: (payload: any) => void) => void;
   isConnected: boolean;
 }
 
@@ -40,6 +43,8 @@ export const BridgeProvider: React.FC<Props> = ({
   const pendingRef = useRef(
     new Map<string, { resolve: (data: any) => void; reject: (error: Error) => void }>(),
   );
+
+  const eventListenersRef = useRef(new Map<string, Set<(payload: any) => void>>());
 
   const uidRef = useRef(0);
   const reconnectTimeoutRef = useRef<any>(null);
@@ -90,6 +95,7 @@ export const BridgeProvider: React.FC<Props> = ({
     });
 
     pendingRef.current.clear();
+    eventListenersRef.current.clear();
 
     setBridge(null);
     isConnectingRef.current = false;
@@ -157,6 +163,7 @@ export const BridgeProvider: React.FC<Props> = ({
       }, 100);
 
       port.onMessage.addListener((msg) => {
+        // Handle request/response messages
         if (msg.id && pendingRef.current.has(msg.id)) {
           const { resolve, reject } = pendingRef.current.get(msg.id)!;
 
@@ -167,6 +174,19 @@ export const BridgeProvider: React.FC<Props> = ({
           }
 
           pendingRef.current.delete(msg.id);
+        }
+        // Handle broadcast messages
+        else if (msg.type === 'broadcast' && msg.key) {
+          const listeners = eventListenersRef.current.get(msg.key);
+          if (listeners) {
+            listeners.forEach((handler) => {
+              try {
+                handler(msg.payload);
+              } catch (error) {
+                console.warn('[Bridge] Error in event handler:', error);
+              }
+            });
+          }
         }
       });
 
@@ -253,6 +273,38 @@ export const BridgeProvider: React.FC<Props> = ({
               reject(e instanceof Error ? e : new Error('Send failed'));
             }
           });
+        },
+
+        broadcast: (key: string, payload: any): void => {
+          if (!portRef.current) {
+            console.warn('[Bridge] Cannot broadcast - disconnected');
+            return;
+          }
+
+          try {
+            portRef.current.postMessage({ type: 'broadcast', key, payload });
+          } catch (e) {
+            console.warn('[Bridge] Broadcast failed:', e);
+          }
+        },
+
+        on: (key: string, handler: (payload: any) => void): void => {
+          let listeners = eventListenersRef.current.get(key);
+          if (!listeners) {
+            listeners = new Set();
+            eventListenersRef.current.set(key, listeners);
+          }
+          listeners.add(handler);
+        },
+
+        off: (key: string, handler: (payload: any) => void): void => {
+          const listeners = eventListenersRef.current.get(key);
+          if (listeners) {
+            listeners.delete(handler);
+            if (listeners.size === 0) {
+              eventListenersRef.current.delete(key);
+            }
+          }
         },
 
         isConnected: true,

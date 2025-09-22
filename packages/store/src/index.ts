@@ -6,7 +6,12 @@ export * from './react.js';
 export * from './bridge.js';
 export * from './hookFactory.js';
 
-export { createStore, StoreBuilder } from './StoreBuilder.js';
+export {
+  createStore,
+  StoreBuilder,
+  createServiceWorkerStore,
+  createUIStore,
+} from './StoreBuilder.js';
 
 // Elegant hook factory (preferred approach)
 export { createStoreHooks } from './hookFactory.js';
@@ -33,7 +38,7 @@ export async function init(storeDefinition: StoreDefinition): Promise<any> {
     return {
       def: storeDefinition,
       store,
-      classes: autoRegisterStoreHandlers(store),
+      classes: autoRegisterStoreHandlers(store, storeDefinition.name),
     };
   } catch (error) {
     console.error(`Failed to initialize store "${storeDefinition.name}":`, error);

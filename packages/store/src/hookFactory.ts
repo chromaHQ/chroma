@@ -36,7 +36,7 @@ function useStoreActions<T extends Record<string, any>>(store: CentralStore<T>) 
         store.setState((state) => ({ ...state, ...partial }));
       },
       updateWith: (updater: (state: T) => Partial<T>) => {
-        store.setState((state) => ({ ...state, ...updater(state) }));
+        store.setState((state) => updater(state));
       },
       replace: (newState: T) => {
         store.setState(newState, true);

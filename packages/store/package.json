@@ -50,10 +50,13 @@
   "devDependencies": {
     "@types/chrome": "^0.0.326",
     "@types/react": "^18.2.7",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
   },
   "scripts": {
     "build": "rollup -c rollup.config.mjs",
-    "dev": "rollup -c rollup.config.mjs --watch"
+    "dev": "rollup -c rollup.config.mjs --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
   }
 }

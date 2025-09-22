@@ -82,6 +82,7 @@ export class BridgeStore<T> implements CentralStore<T> {
       }
 
       this.notifyListeners();
+
       this.ready = true;
       this.notifyReady();
     } catch (error) {
@@ -106,11 +107,16 @@ export class BridgeStore<T> implements CentralStore<T> {
   private setupStateSync() {
     // Listen for state updates from service worker
     if (this.bridge.on) {
-      this.bridge.on(`store:${this.storeName}:stateChanged`, (newState: T) => {
-        this.previousState = this.currentState;
-        this.currentState = newState;
-        this.notifyListeners();
+      this.bridge.on(`store:${this.storeName}:stateChanged`, () => {
+        // get new state from service worker
+        this.bridge.send<void, T>(`store:${this.storeName}:getState`).then((newState) => {
+          this.previousState = this.currentState;
+          this.currentState = newState;
+          this.notifyListeners();
+        });
       });
+    } else {
+      console.warn(`BridgeStore[${this.storeName}]: Bridge does not support event listening`);
     }
   }
 

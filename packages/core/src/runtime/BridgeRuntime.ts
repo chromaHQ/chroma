@@ -24,6 +24,16 @@ interface BridgeRequest {
 }
 
 /**
+ * Broadcast message structure for event communication
+ */
+interface BroadcastMessage {
+  readonly type: 'broadcast';
+  readonly key: string;
+  readonly payload: unknown;
+  readonly metadata?: Record<string, any>;
+}
+
+/**
  * Message response structure for bridge communication
  */
 interface BridgeResponse {
@@ -83,6 +93,7 @@ class BridgeRuntimeManager {
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly KEEP_ALIVE_INTERVAL_MS = 25000;
   private isInitialized = false;
+  private connectedPorts = new Set<chrome.runtime.Port>();
 
   constructor(options: BridgeRuntimeOptions) {
     this.container = options.container;
@@ -164,10 +175,26 @@ class BridgeRuntimeManager {
    * Setup message handler for connected port
    */
   private setupMessageHandler(port: chrome.runtime.Port): void {
-    port.onMessage.addListener(async (request: BridgeRequest) => {
-      const context = this.createPipelineContext(request);
+    // Track connected ports for broadcasting
+    this.connectedPorts.add(port);
 
+    port.onMessage.addListener(async (message: BridgeRequest | BroadcastMessage) => {
       try {
+        // Handle broadcast messages
+        if ('type' in message && message.type === 'broadcast') {
+          this.logger.debug('📡 Received broadcast:', {
+            key: message.key,
+            hasPayload: !!message.payload,
+          });
+
+          this.handleBroadcast(message, port);
+          return;
+        }
+
+        // Handle regular request/response messages
+        const request = message as BridgeRequest;
+        const context = this.createPipelineContext(request);
+
         this.logger.debug('📨 Received message:', {
           key: request.key,
           id: request.id,
@@ -177,12 +204,22 @@ class BridgeRuntimeManager {
         const response = await this.processMessage(context);
         this.sendResponse(port, response);
       } catch (error) {
-        const errorResponse = await this.handleError(error as Error, context);
-        this.sendResponse(port, errorResponse);
+        // Only send error response for regular requests, not broadcasts
+        if (!('type' in message)) {
+          const request = message as BridgeRequest;
+          const context = this.createPipelineContext(request);
+          const errorResponse = await this.handleError(error as Error, context);
+          this.sendResponse(port, errorResponse);
+        } else {
+          this.logger.error('Error handling broadcast:', error);
+        }
       }
     });
 
     port.onDisconnect.addListener(() => {
+      // Remove from connected ports
+      this.connectedPorts.delete(port);
+
       if (chrome.runtime.lastError) {
         this.logger.warn(`📴 Port disconnected with error: ${chrome.runtime.lastError.message}`);
         chrome.runtime.lastError;
@@ -281,6 +318,51 @@ class BridgeRuntimeManager {
     });
 
     return this.errorHandler.handle(error, context);
+  }
+
+  /**
+   * Handle broadcast messages from UI side
+   */
+  private handleBroadcast(message: BroadcastMessage, senderPort: chrome.runtime.Port): void {
+    // Forward broadcast to all other connected ports (except sender)
+    this.connectedPorts.forEach((port) => {
+      if (port !== senderPort) {
+        try {
+          port.postMessage(message);
+        } catch (error) {
+          this.logger.error('Failed to forward broadcast to port', error);
+          // Remove disconnected port
+          this.connectedPorts.delete(port);
+        }
+      }
+    });
+  }
+
+  /**
+   * Broadcast message to all connected UI ports from service worker
+   */
+  public broadcast(key: string, payload: unknown): void {
+    const message: BroadcastMessage = {
+      type: 'broadcast',
+      key,
+      payload,
+    };
+
+    this.logger.debug('📡 Broadcasting from service worker:', {
+      key,
+      hasPayload: !!payload,
+      connectedPorts: this.connectedPorts.size,
+    });
+
+    this.connectedPorts.forEach((port) => {
+      try {
+        port.postMessage(message);
+      } catch (error) {
+        this.logger.error('Failed to broadcast to port', error);
+        // Remove disconnected port
+        this.connectedPorts.delete(port);
+      }
+    });
   }
 
   /**
@@ -387,9 +469,10 @@ class BridgeLogger {
   }
 }
 
-export function bootstrap(options: BridgeRuntimeOptions): void {
+export function bootstrap(options: BridgeRuntimeOptions): BridgeRuntimeManager {
   const runtime = new BridgeRuntimeManager(options);
   runtime.initialize();
+  return runtime;
 }
 
 export {
@@ -398,6 +481,7 @@ export {
   type BridgeRuntimeOptions,
   type BridgeRequest,
   type BridgeResponse,
+  type BroadcastMessage,
   type MessageHandler,
   type ErrorHandler,
   type PipelineContext,
