@@ -42,11 +42,6 @@ export class BridgeStore<T> implements CentralStore<T> {
     this.storeName = storeName;
     this.readyCallbacks = readyCallbacks;
 
-    console.debug(
-      `BridgeStore[${this.storeName}]: Creating with bridge connected:`,
-      bridge.isConnected,
-    );
-
     // Listen for state changes from service worker
     this.setupStateSync();
 
@@ -75,10 +70,6 @@ export class BridgeStore<T> implements CentralStore<T> {
         return;
       }
 
-      console.debug(
-        `BridgeStore[${this.storeName}]: Initializing with bridge (attempt ${this.initializationAttempts})...`,
-      );
-
       // Get initial state from service worker
       const state = await this.bridge.send<void, T>(`store:${this.storeName}:getState`);
 
@@ -93,10 +84,6 @@ export class BridgeStore<T> implements CentralStore<T> {
       this.notifyListeners();
       this.ready = true;
       this.notifyReady();
-
-      console.debug(
-        `BridgeStore[${this.storeName}]: Successfully initialized and ready after ${this.initializationAttempts} attempts`,
-      );
     } catch (error) {
       console.error(
         `BridgeStore[${this.storeName}]: Failed to initialize (attempt ${this.initializationAttempts}):`,
