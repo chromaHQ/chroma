@@ -116,7 +116,6 @@ export class StoreBuilder<T = any> {
 
     store.subscribe(() => {
       if (runtimeBridge) {
-        console.log(runtimeBridge);
         runtimeBridge.broadcast(`store:${this.config.name}:stateChanged`, store.getState());
       }
     });

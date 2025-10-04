@@ -93,9 +93,7 @@ export class JobRegistry {
 
   pause(id: string): void {
     const entry = this.jobs.get(id);
-    console.log(`Pausing job ${id}`);
     if (entry && entry.context.state === JobState.RUNNING) {
-      console.log(`paused job ${id}`);
       this.updateState(id, JobState.PAUSED);
       this.clearTimers(id);
       entry.job.pause?.();
@@ -104,9 +102,7 @@ export class JobRegistry {
 
   resume(id: string): void {
     const entry = this.jobs.get(id);
-    console.log(`Resuming job ${id}`);
     if (entry && entry.context.state === JobState.PAUSED) {
-      console.log(`Resuming job ${id}`);
       this.updateState(id, JobState.SCHEDULED);
       entry.job.resume?.();
     }
@@ -115,11 +111,22 @@ export class JobRegistry {
   stop(id: string): void {
     const entry = this.jobs.get(id);
     if (entry && entry.context.state !== JobState.STOPPED) {
-      console.log(`Stopping job ${id}`);
       this.updateState(id, JobState.STOPPED);
       this.clearTimers(id);
       entry.job.stop?.();
     }
+  }
+
+  listAll(): Array<{ id: string; state: JobState; options: JobOptions }> {
+    const jobs: Array<{ id: string; state: JobState; options: JobOptions }> = [];
+    this.jobs.forEach((entry, id) => {
+      jobs.push({
+        id,
+        state: entry.context.state,
+        options: entry.options,
+      });
+    });
+    return jobs;
   }
 
   private createJobContext(id: string, options: JobOptions): JobContext {

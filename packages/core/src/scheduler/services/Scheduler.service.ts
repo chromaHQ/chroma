@@ -27,24 +27,52 @@ export class Scheduler {
     this.timeout.onTrigger(this.execute.bind(this));
   }
 
-  schedule(id: string, options: JobOptions) {
+  schedule(id: string, options: JobOptions): void {
     const context = this.registry.getContext(id);
     if (!context || context.isStopped()) {
       return;
     }
 
     const when = this.getScheduleTime(options);
+    const now = Date.now();
 
-    const adapter = when - Date.now() < 60_000 ? this.timeout : this.alarm;
+    // Prevent scheduling in the past - must be at least 1 second in the future
+    if (when <= now) {
+      this.logger.warn(`Job ${id} scheduled time is in the past, recalculating...`);
+      // For cron jobs, this shouldn't happen, but if it does, get next occurrence
+      if (options.cron) {
+        const nextWhen = this.getScheduleTime(options);
+        if (nextWhen <= now) {
+          this.logger.error(`Job ${id} cannot be scheduled - cron expression may be invalid`);
+          return;
+        }
+        return this.schedule(id, options);
+      }
+      return;
+    }
+
+    // Cancel any existing timers before scheduling new ones to prevent duplicates
+    this.alarm.cancel(id);
+    this.timeout.cancel(id);
+    this.registry.clearTimers(id);
+
+    const adapter = when - now < 60_000 ? this.timeout : this.alarm;
     const timerId = adapter.schedule(id, when);
 
     if (adapter === this.timeout) {
       this.registry.setTimeoutId(id, timerId as unknown as NodeJS.Timeout);
     }
+
+    this.logger.debug(
+      `Job ${id} scheduled for ${new Date(when).toISOString()} (in ${Math.round((when - now) / 1000)}s)`,
+    );
   }
 
   pause(id: string): void {
     this.logger.info(`Pausing job ${id}`);
+    // Cancel timers in adapters before pausing
+    this.alarm.cancel(id);
+    this.timeout.cancel(id);
     this.registry.pause(id);
   }
 
@@ -61,6 +89,9 @@ export class Scheduler {
 
   stop(id: string): void {
     this.logger.info(`Stopping job ${id}`);
+    // Cancel timers in adapters before stopping
+    this.alarm.cancel(id);
+    this.timeout.cancel(id);
     this.registry.stop(id);
   }
 
@@ -122,7 +153,6 @@ export class Scheduler {
   }
 
   listJobs(): Array<{ id: string; state: JobState; options: JobOptions }> {
-    const jobs: Array<{ id: string; state: JobState; options: JobOptions }> = [];
-    return jobs;
+    return this.registry.listAll();
   }
 }
