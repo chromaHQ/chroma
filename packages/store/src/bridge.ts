@@ -2,7 +2,11 @@ import type { CentralStore } from './types.js';
 
 // Import bridge types from chroma core/react
 export interface Bridge {
-  send: <Req = unknown, Res = unknown>(key: string, payload?: Req) => Promise<Res>;
+  send: <Req = unknown, Res = unknown>(
+    key: string,
+    payload?: Req,
+    timeoutDuration?: number,
+  ) => Promise<Res>;
   isConnected: boolean;
 }
 

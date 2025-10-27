@@ -3,7 +3,11 @@ import { useEffect, useState, createContext, useCallback, useMemo, useRef } from
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
 interface Bridge {
-  send: <Req = unknown, Res = unknown>(key: string, payload?: Req) => Promise<Res>;
+  send: <Req = unknown, Res = unknown>(
+    key: string,
+    payload?: Req,
+    timeoutDuration?: number,
+  ) => Promise<Res>;
   broadcast: (key: string, payload: any) => void;
   on: (key: string, handler: (payload: any) => void) => void;
   off: (key: string, handler: (payload: any) => void) => void;
