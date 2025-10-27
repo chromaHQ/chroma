@@ -214,7 +214,11 @@ export const BridgeProvider: React.FC<Props> = ({
       });
 
       const bridgeInstance: Bridge = {
-        send: <Req, Res = unknown>(key: string, payload?: Req): Promise<Res> => {
+        send: <Req, Res = unknown>(
+          key: string,
+          payload?: Req,
+          timeoutDuration: number = 10000,
+        ): Promise<Res> => {
           return new Promise((resolve, reject) => {
             if (!portRef.current) {
               reject(new Error('Bridge disconnected'));
@@ -230,7 +234,7 @@ export const BridgeProvider: React.FC<Props> = ({
                 pendingRef.current.delete(id);
                 reject(new Error('Request timeout'));
               }
-            }, 10000);
+            }, timeoutDuration);
 
             try {
               portRef.current.postMessage({ id, key, payload });
