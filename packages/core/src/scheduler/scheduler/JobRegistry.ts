@@ -165,9 +165,9 @@ export class JobRegistry {
       isRetrying: () => (this.getContext(id)?.retryCount || 0) > 0,
       isScheduled: () => this.getContext(id)?.state === JobState.SCHEDULED,
       isDelayed: () => !!options.delay,
-      isRecurring: () => !!options.cron,
+      isRecurring: () => !!options.cron || !!options.recurring,
       isCron: () => !!options.cron,
-      isTimeout: () => !!options.delay && !options.cron,
+      isTimeout: () => !!options.delay && !options.cron && !options.recurring,
       isAlarm: () => !!options.cron || (!!options.delay && options.delay > 60000),
     };
   }

@@ -124,7 +124,8 @@ export class Scheduler {
 
         const options = this.registry.meta(id);
 
-        if (options?.cron) {
+        // Reschedule if it's a recurring job (cron or recurring delay)
+        if (options?.cron || options?.recurring) {
           this.registry.updateState(id, JobState.SCHEDULED);
           this.schedule(id, options);
         }
