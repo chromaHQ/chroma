@@ -236,7 +236,11 @@ export const BridgeProvider: React.FC<Props> = ({
             const timeout = setTimeout(() => {
               if (pendingRef.current.has(id)) {
                 pendingRef.current.delete(id);
-                reject(new Error('Request timeout'));
+                reject(
+                  new Error(
+                    `Request timed out after ${timeoutDuration} ms for key: ${key} with id: ${id} and payload: ${JSON.stringify(payload)}`,
+                  ),
+                );
               }
             }, timeoutDuration);
 

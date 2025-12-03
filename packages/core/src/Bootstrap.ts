@@ -73,7 +73,7 @@ class ApplicationBootstrap {
    * Create and initialize a new Chroma application instance
    */
   public async create({
-    keepPortAlive = false,
+    keepPortAlive = true,
     portName,
     enableLogs = true,
     disableBootMethods = false,
@@ -632,7 +632,7 @@ class BootstrapLogger implements Logger {
 
 // Laravel-style facade for clean API
 export async function create({
-  keepPortAlive = false,
+  keepPortAlive = true,
   portName,
   enableLogs = true,
   disableBootMethods = false,
@@ -679,7 +679,7 @@ class BootstrapBuilder {
    * Create and start the application
    */
   public async create({
-    keepPortAlive = false,
+    keepPortAlive = true,
     portName,
     enableLogs = true,
     disableBootMethods = false,
