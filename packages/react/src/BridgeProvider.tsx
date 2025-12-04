@@ -87,6 +87,9 @@ const CONFIG = {
   CONSECUTIVE_FAILURE_THRESHOLD: 2,
   RECONNECT_DELAY: 100,
   PORT_NAME: 'chroma-bridge',
+  // Service worker restart retry settings (indefinite retries)
+  SW_RESTART_RETRY_DELAY: 500,
+  SW_RESTART_MAX_DELAY: 5000,
 } as const;
 
 // ============================================================================
@@ -368,6 +371,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const maxRetryCooldownRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const triggerReconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const swRestartRetryCountRef = useRef(0); // Separate counter for SW restart retries (doesn't count against max)
 
   // Health monitoring refs
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -503,6 +507,31 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
     [maxRetries, retryAfter, maxRetryCooldown, updateStatus],
   );
 
+  // Schedule reconnect specifically for SW restart - doesn't count against max retries
+  // This handles the case when the service worker is restarting and not yet available
+  const scheduleSwRestartReconnect = useCallback(
+    (connectFn: () => void) => {
+      if (!isMountedRef.current) return;
+
+      swRestartRetryCountRef.current++;
+      const delay = calculateBackoffDelay(
+        swRestartRetryCountRef.current,
+        CONFIG.SW_RESTART_RETRY_DELAY,
+        CONFIG.SW_RESTART_MAX_DELAY,
+      );
+
+      console.log(
+        `[Bridge] Service worker not ready, retrying in ${delay}ms (attempt ${swRestartRetryCountRef.current})`,
+      );
+      updateStatus('reconnecting');
+
+      reconnectTimeoutRef.current = setTimeout(() => {
+        if (isMountedRef.current) connectFn();
+      }, delay);
+    },
+    [updateStatus],
+  );
+
   // Main connection logic
   const connect = useCallback(() => {
     if (isConnectingRef.current) return;
@@ -536,10 +565,11 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         if (err) {
           clearIntervalSafe(errorCheckIntervalRef);
           if (err.includes('Receiving end does not exist')) {
-            console.warn('[Bridge] Background not ready, retrying...');
+            console.warn('[Bridge] Service worker not ready (may be restarting)...');
             cleanup();
             isConnectingRef.current = false;
-            scheduleReconnect(connect);
+            // Use SW restart retry - doesn't count against max retries
+            scheduleSwRestartReconnect(connect);
           }
           return;
         }
@@ -605,6 +635,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       setIsServiceWorkerAlive(true);
       setError(null);
       retryCountRef.current = 0;
+      swRestartRetryCountRef.current = 0; // Reset SW restart counter on success
       consecutiveTimeoutsRef.current = 0;
       isConnectingRef.current = false;
 
@@ -628,6 +659,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
     handleError,
     handleMessage,
     scheduleReconnect,
+    scheduleSwRestartReconnect,
     defaultTimeout,
     updateStatus,
     pingInterval,
