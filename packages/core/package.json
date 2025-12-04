@@ -1,6 +1,6 @@
 {
   "name": "@chromahq/core",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "Core library for building Chrome extensions with Chroma framework",
   "type": "module",
   "main": "dist/index.cjs.js",
