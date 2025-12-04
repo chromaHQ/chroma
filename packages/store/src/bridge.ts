@@ -53,8 +53,21 @@ export class BridgeStore<T> implements CentralStore<T> {
     // Listen for state changes from service worker
     this.setupStateSync();
 
+    // Listen for bridge reconnection to re-initialize
+    this.setupReconnectListener();
+
     // Initialize the store (will retry if bridge not ready)
     this.initialize();
+  }
+
+  private setupReconnectListener() {
+    if (this.bridge.on) {
+      this.bridge.on('bridge:connected', () => {
+        console.log(`BridgeStore[${this.storeName}]: Bridge reconnected, re-initializing...`);
+        // Reset state and re-initialize on reconnection
+        this.forceInitialize();
+      });
+    }
   }
 
   public initialize = async () => {

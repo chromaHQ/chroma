@@ -639,6 +639,16 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       consecutiveTimeoutsRef.current = 0;
       isConnectingRef.current = false;
 
+      // Emit bridge:connected event for stores to re-initialize
+      // This is dispatched directly to local listeners (not over the port)
+      eventListenersRef.current.get('bridge:connected')?.forEach((handler) => {
+        try {
+          handler({ timestamp: Date.now() });
+        } catch (err) {
+          console.warn('[Bridge] bridge:connected handler error:', err);
+        }
+      });
+
       // Start health monitoring
       startHealthMonitor({
         bridge: bridgeInstance,
