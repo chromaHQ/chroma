@@ -475,20 +475,35 @@ export const BridgeProvider: React.FC<Props> = ({
     connect();
   }, [connect, updateStatus]);
 
+  // Use refs to access current values in visibility handler without causing re-renders
+  const statusRef = useRef(status);
+  const bridgeRef = useRef(bridge);
+  
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+  
+  useEffect(() => {
+    bridgeRef.current = bridge;
+  }, [bridge]);
+
   useEffect(() => {
     connect();
 
     // Auto-reconnect when tab becomes visible (handles service worker wake-up)
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
+        const currentStatus = statusRef.current;
+        const currentBridge = bridgeRef.current;
+        
         // If we're disconnected or had errors, try to reconnect
-        if (status === 'disconnected' || status === 'error') {
+        if (currentStatus === 'disconnected' || currentStatus === 'error') {
           console.log('[Bridge] Tab became visible, attempting reconnection...');
           retryCountRef.current = 0;
           connect();
-        } else if (status === 'connected' && bridge) {
+        } else if (currentStatus === 'connected' && currentBridge) {
           // If connected, verify connection is still alive
-          bridge.ping().then((alive) => {
+          currentBridge.ping().then((alive) => {
             if (!alive) {
               console.warn(
                 '[Bridge] Tab became visible but service worker unresponsive, reconnecting...',
@@ -512,7 +527,7 @@ export const BridgeProvider: React.FC<Props> = ({
       }
       cleanup();
     };
-  }, [connect, cleanup, status, bridge]);
+  }, [connect, cleanup]);
 
   const contextValue = useMemo(
     (): BridgeContextValue => ({

@@ -12,12 +12,14 @@ export interface Bridge {
 
 export interface BridgeWithEvents extends Bridge {
   on?: (key: string, handler: (payload: any) => void) => void;
+  off?: (key: string, handler: (payload: any) => void) => void;
 }
 
 export interface BridgeWithHandlers extends Bridge {
   register: (key: string, handler: (payload?: any) => any) => void;
   broadcast: (key: string, payload: any) => void;
   on?: (key: string, handler: (payload: any) => void) => void;
+  off?: (key: string, handler: (payload: any) => void) => void;
 }
 
 // Bridge store that proxies all operations to the service worker
@@ -32,6 +34,8 @@ export class BridgeStore<T> implements CentralStore<T> {
   private readyCallbacks = new Set<() => void>();
   private initializationAttempts: number = 0;
   private readonly maxInitializationAttempts: number = 10;
+  private initializationTimer: ReturnType<typeof setTimeout> | null = null;
+  private isInitializing: boolean = false;
 
   constructor(
     bridge: BridgeWithEvents,
@@ -54,7 +58,19 @@ export class BridgeStore<T> implements CentralStore<T> {
   }
 
   public initialize = async () => {
+    // Prevent concurrent initialization attempts
+    if (this.isInitializing) {
+      return;
+    }
+
+    // Clear any pending retry timer
+    if (this.initializationTimer) {
+      clearTimeout(this.initializationTimer);
+      this.initializationTimer = null;
+    }
+
     this.initializationAttempts++;
+    this.isInitializing = true;
 
     try {
       // Check max attempts to prevent infinite retries
@@ -62,15 +78,23 @@ export class BridgeStore<T> implements CentralStore<T> {
         console.error(
           `BridgeStore[${this.storeName}]: Max initialization attempts (${this.maxInitializationAttempts}) reached, giving up`,
         );
+        this.isInitializing = false;
         return;
       }
 
       // Check if bridge is connected before attempting initialization
       if (!this.bridge.isConnected) {
-        console.warn(
-          `BridgeStore[${this.storeName}]: Bridge not connected (attempt ${this.initializationAttempts}), retrying in 1s...`,
-        );
-        setTimeout(() => this.initialize(), 500);
+        // Only log on first attempt or every 3rd attempt to reduce spam
+        if (this.initializationAttempts === 1 || this.initializationAttempts % 3 === 0) {
+          console.log(
+            `BridgeStore[${this.storeName}]: Waiting for bridge connection (attempt ${this.initializationAttempts}/${this.maxInitializationAttempts})...`,
+          );
+        }
+
+        // Use exponential backoff: 500ms, 1s, 2s, 4s... capped at 5s
+        const delay = Math.min(500 * Math.pow(2, this.initializationAttempts - 1), 5000);
+        this.isInitializing = false;
+        this.initializationTimer = setTimeout(() => this.initialize(), delay);
         return;
       }
 
@@ -88,22 +112,24 @@ export class BridgeStore<T> implements CentralStore<T> {
       this.notifyListeners();
 
       this.ready = true;
+      this.isInitializing = false;
+      console.log(`BridgeStore[${this.storeName}]: Initialized successfully`);
       this.notifyReady();
     } catch (error) {
+      this.isInitializing = false;
+
       console.error(
         `BridgeStore[${this.storeName}]: Failed to initialize (attempt ${this.initializationAttempts}):`,
         error,
       );
 
-      // Retry initialization after a delay if bridge is still connected and we haven't exceeded max attempts
-      if (this.bridge.isConnected && this.initializationAttempts < this.maxInitializationAttempts) {
-        const delay = Math.min(2000 * this.initializationAttempts, 10000); // Exponential backoff, max 10s
-        console.warn(`BridgeStore[${this.storeName}]: Retrying initialization in ${delay}ms...`);
-        setTimeout(() => this.initialize(), delay);
+      // Retry initialization after a delay if we haven't exceeded max attempts
+      if (this.initializationAttempts < this.maxInitializationAttempts) {
+        const delay = Math.min(1000 * Math.pow(2, this.initializationAttempts - 1), 10000);
+        console.log(`BridgeStore[${this.storeName}]: Retrying initialization in ${delay}ms...`);
+        this.initializationTimer = setTimeout(() => this.initialize(), delay);
       } else {
-        console.error(
-          `BridgeStore[${this.storeName}]: Bridge disconnected or max attempts reached, cannot retry`,
-        );
+        console.error(`BridgeStore[${this.storeName}]: Max attempts reached, cannot retry`);
       }
     }
   };
@@ -245,9 +271,17 @@ export class BridgeStore<T> implements CentralStore<T> {
 
   // Additional StoreApi methods
   destroy = () => {
+    // Clear initialization timer
+    if (this.initializationTimer) {
+      clearTimeout(this.initializationTimer);
+      this.initializationTimer = null;
+    }
+
     if (this.listeners) {
       this.listeners.clear();
     }
+
+    this.readyCallbacks.clear();
   };
 
   getInitialState = (): T => {
@@ -317,11 +351,19 @@ export class BridgeStore<T> implements CentralStore<T> {
   };
 
   /**
-   * Force re-initialization of the store (useful for debugging)
+   * Force re-initialization of the store (useful for debugging or after reconnection)
    */
   public forceInitialize = async (): Promise<void> => {
     console.debug(`BridgeStore[${this.storeName}]: Force re-initialization requested`);
+
+    // Clear any pending initialization
+    if (this.initializationTimer) {
+      clearTimeout(this.initializationTimer);
+      this.initializationTimer = null;
+    }
+
     this.ready = false;
+    this.isInitializing = false;
     this.initializationAttempts = 0; // Reset attempt counter
     await this.initialize();
   };
@@ -333,6 +375,7 @@ export class BridgeStore<T> implements CentralStore<T> {
     return {
       storeName: this.storeName,
       ready: this.ready,
+      isInitializing: this.isInitializing,
       bridgeConnected: this.bridge.isConnected,
       hasCurrentState: this.currentState !== null,
       hasInitialState: this.initialState !== null,
