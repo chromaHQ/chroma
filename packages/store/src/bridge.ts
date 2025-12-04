@@ -177,14 +177,41 @@ export class BridgeStore<T> implements CentralStore<T> {
       actualUpdate = partial;
     }
 
+    // Check if bridge is connected before attempting update
+    if (!this.bridge.isConnected) {
+      console.warn(
+        `BridgeStore[${this.storeName}]: Bridge disconnected, state update queued locally only`,
+      );
+      // Still apply optimistic update but don't try to send
+      this.applyOptimisticUpdate(actualUpdate, replace);
+      return;
+    }
+
+    // Store state for potential rollback
+    const stateBeforeUpdate = this.currentState ? { ...this.currentState } : null;
+
+    // Apply optimistic update for immediate UI feedback
+    this.applyOptimisticUpdate(actualUpdate, replace);
+
     // Send the resolved state update to service worker
     const payload = { partial: actualUpdate, replace };
 
     this.bridge.send(`store:${this.storeName}:setState`, payload).catch((error: any) => {
-      console.error('Failed to update state via bridge:', error);
-    });
+      console.error(`BridgeStore[${this.storeName}]: Failed to update state via bridge:`, error);
 
-    // Optimistic update for immediate UI feedback
+      // Rollback optimistic update on failure
+      if (stateBeforeUpdate !== null) {
+        console.warn(
+          `BridgeStore[${this.storeName}]: Rolling back optimistic update due to bridge error`,
+        );
+        this.previousState = this.currentState;
+        this.currentState = stateBeforeUpdate;
+        this.notifyListeners();
+      }
+    });
+  }
+
+  private applyOptimisticUpdate(actualUpdate: any, replace?: boolean): void {
     if (this.currentState) {
       this.previousState = this.currentState;
       if (replace) {
@@ -248,17 +275,39 @@ export class BridgeStore<T> implements CentralStore<T> {
 
   reset = (): void => {
     if (this.initialState !== null) {
-      // Send reset command to service worker
-      this.bridge.send(`store:${this.storeName}:reset`).catch((error: any) => {
-        console.error('Failed to reset state via bridge:', error);
-      });
+      // Check if bridge is connected
+      if (!this.bridge.isConnected) {
+        console.warn(
+          `BridgeStore[${this.storeName}]: Bridge disconnected, reset applied locally only`,
+        );
+        this.previousState = this.currentState;
+        this.currentState = { ...this.initialState };
+        this.notifyListeners();
+        return;
+      }
+
+      // Store state for potential rollback
+      const stateBeforeReset = this.currentState ? { ...this.currentState } : null;
 
       // Optimistic reset for immediate UI feedback
       this.previousState = this.currentState;
       this.currentState = { ...this.initialState };
       this.notifyListeners();
+
+      // Send reset command to service worker
+      this.bridge.send(`store:${this.storeName}:reset`).catch((error: any) => {
+        console.error(`BridgeStore[${this.storeName}]: Failed to reset state via bridge:`, error);
+
+        // Rollback on failure
+        if (stateBeforeReset !== null) {
+          console.warn(`BridgeStore[${this.storeName}]: Rolling back reset due to bridge error`);
+          this.previousState = this.currentState;
+          this.currentState = stateBeforeReset;
+          this.notifyListeners();
+        }
+      });
     } else {
-      console.warn('BridgeStore: Cannot reset, initial state not available');
+      console.warn(`BridgeStore[${this.storeName}]: Cannot reset, initial state not available`);
     }
   };
 

@@ -30,6 +30,7 @@ interface Props {
   retryAfter?: number;
   maxRetries?: number;
   pingInterval?: number; // How often to ping the service worker (ms)
+  maxRetryCooldown?: number; // How long to wait before resetting retry count (ms)
   onConnectionChange?: (status: ConnectionStatus) => void;
   onError?: (error: Error) => void;
 }
@@ -39,6 +40,7 @@ export const BridgeProvider: React.FC<Props> = ({
   retryAfter = 1000,
   maxRetries = 10,
   pingInterval = 5000,
+  maxRetryCooldown = 30000, // Reset retry count after 30s of max retries
   onConnectionChange,
   onError,
 }) => {
@@ -48,6 +50,8 @@ export const BridgeProvider: React.FC<Props> = ({
   const [isServiceWorkerAlive, setIsServiceWorkerAlive] = useState(false);
 
   const portRef = useRef<chrome.runtime.Port | null>(null);
+  const maxRetryCooldownRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const consecutivePingFailuresRef = useRef(0);
 
   const pendingRef = useRef(
     new Map<
@@ -239,8 +243,27 @@ export const BridgeProvider: React.FC<Props> = ({
         // Retry with exponential backoff
         if (retryCountRef.current < maxRetries) {
           retryCountRef.current++;
-          const delay = retryAfter * Math.pow(2, retryCountRef.current - 1);
+          const delay = Math.min(retryAfter * Math.pow(2, retryCountRef.current - 1), 30000); // Cap at 30s
+          console.log(
+            `[Bridge] Reconnecting in ${delay}ms (attempt ${retryCountRef.current}/${maxRetries})`,
+          );
+          updateStatus('reconnecting');
           reconnectTimeoutRef.current = setTimeout(connect, delay);
+        } else {
+          // Max retries reached - schedule a cooldown reset and retry
+          console.warn(
+            `[Bridge] Max retries (${maxRetries}) reached. Will retry after ${maxRetryCooldown}ms cooldown.`,
+          );
+          if (maxRetryCooldownRef.current) {
+            clearTimeout(maxRetryCooldownRef.current);
+          }
+          maxRetryCooldownRef.current = setTimeout(() => {
+            console.log(
+              '[Bridge] Cooldown complete, resetting retry count and attempting reconnection...',
+            );
+            retryCountRef.current = 0;
+            connect();
+          }, maxRetryCooldown);
         }
       });
 
@@ -264,29 +287,41 @@ export const BridgeProvider: React.FC<Props> = ({
                 pendingRef.current.delete(id);
                 consecutiveTimeoutsRef.current++;
 
+                const errorMessage = `Request timed out after ${timeoutDuration}ms for key: ${key} (id: ${id})`;
+                console.warn(`[Bridge] ${errorMessage}`);
+
                 // If we get multiple consecutive timeouts, the service worker is likely dead
-                if (consecutiveTimeoutsRef.current >= 2) {
+                if (consecutiveTimeoutsRef.current >= 2 && status !== 'reconnecting') {
                   console.warn(
-                    '[Bridge] Multiple timeouts detected, service worker may be unresponsive. Reconnecting...',
+                    `[Bridge] ${consecutiveTimeoutsRef.current} consecutive timeouts detected, service worker may be unresponsive. Reconnecting...`,
                   );
                   setIsServiceWorkerAlive(false);
                   updateStatus('reconnecting');
 
-                  // Force reconnect
-                  cleanup();
+                  // Reject all pending requests before reconnecting
+                  pendingRef.current.forEach(
+                    ({ reject: pendingReject, timeout: pendingTimeout }, pendingId) => {
+                      if (pendingId !== id) {
+                        clearTimeout(pendingTimeout);
+                        pendingReject(new Error('Bridge reconnecting due to consecutive timeouts'));
+                      }
+                    },
+                  );
+                  pendingRef.current.clear();
+
+                  // Force reconnect after a short delay
                   retryCountRef.current = 0;
                   isConnectingRef.current = false;
-                  setTimeout(connect, 500);
+                  consecutiveTimeoutsRef.current = 0; // Reset before reconnect
+                  setTimeout(() => {
+                    cleanup();
+                    connect();
+                  }, 100);
                 }
 
-                reject(
-                  new Error(
-                    `Request timed out after ${timeoutDuration} ms for key: ${key} with id: ${id}`,
-                  ),
-                );
+                reject(new Error(errorMessage));
               }
             }, timeoutDuration);
-
             pendingRef.current.set(id, { resolve, reject, timeout });
 
             try {
@@ -376,7 +411,9 @@ export const BridgeProvider: React.FC<Props> = ({
           }
         },
 
-        isConnected: true,
+        get isConnected() {
+          return portRef.current !== null && status === 'connected';
+        },
       };
 
       setBridge(bridgeInstance);
@@ -387,16 +424,34 @@ export const BridgeProvider: React.FC<Props> = ({
       consecutiveTimeoutsRef.current = 0;
       isConnectingRef.current = false;
 
-      // Start ping interval to detect service worker health
+      // Start ping interval to detect service worker health and auto-reconnect
       if (pingIntervalRef.current) {
         clearInterval(pingIntervalRef.current);
       }
+      consecutivePingFailuresRef.current = 0;
       pingIntervalRef.current = setInterval(async () => {
         if (bridgeInstance && portRef.current) {
           const alive = await bridgeInstance.ping();
           setIsServiceWorkerAlive(alive);
+
           if (!alive) {
-            console.warn('[Bridge] Service worker ping failed, may be unresponsive');
+            consecutivePingFailuresRef.current++;
+            console.warn(
+              `[Bridge] Service worker ping failed (${consecutivePingFailuresRef.current} consecutive failures)`,
+            );
+
+            // Auto-reconnect after 2 consecutive ping failures
+            if (consecutivePingFailuresRef.current >= 2) {
+              console.warn('[Bridge] Auto-reconnecting due to unresponsive service worker...');
+              consecutivePingFailuresRef.current = 0;
+              retryCountRef.current = 0;
+              isConnectingRef.current = false;
+              updateStatus('reconnecting');
+              cleanup();
+              connect();
+            }
+          } else {
+            consecutivePingFailuresRef.current = 0;
           }
         }
       }, pingInterval);
@@ -422,8 +477,42 @@ export const BridgeProvider: React.FC<Props> = ({
 
   useEffect(() => {
     connect();
-    return cleanup;
-  }, [connect, cleanup]);
+
+    // Auto-reconnect when tab becomes visible (handles service worker wake-up)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        // If we're disconnected or had errors, try to reconnect
+        if (status === 'disconnected' || status === 'error') {
+          console.log('[Bridge] Tab became visible, attempting reconnection...');
+          retryCountRef.current = 0;
+          connect();
+        } else if (status === 'connected' && bridge) {
+          // If connected, verify connection is still alive
+          bridge.ping().then((alive) => {
+            if (!alive) {
+              console.warn(
+                '[Bridge] Tab became visible but service worker unresponsive, reconnecting...',
+              );
+              retryCountRef.current = 0;
+              isConnectingRef.current = false;
+              cleanup();
+              connect();
+            }
+          });
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (maxRetryCooldownRef.current) {
+        clearTimeout(maxRetryCooldownRef.current);
+      }
+      cleanup();
+    };
+  }, [connect, cleanup, status, bridge]);
 
   const contextValue = useMemo(
     (): BridgeContextValue => ({
