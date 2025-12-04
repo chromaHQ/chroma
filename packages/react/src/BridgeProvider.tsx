@@ -367,6 +367,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   const retryCountRef = useRef(0);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const maxRetryCooldownRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const triggerReconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Health monitoring refs
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -413,6 +414,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   // Cleanup
   const cleanup = useCallback(() => {
     clearTimeoutSafe(reconnectTimeoutRef);
+    clearTimeoutSafe(triggerReconnectTimeoutRef);
     clearIntervalSafe(errorCheckIntervalRef);
     clearIntervalSafe(pingIntervalRef);
 
@@ -473,6 +475,8 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   // Schedule reconnect with backoff
   const scheduleReconnect = useCallback(
     (connectFn: () => void) => {
+      if (!isMountedRef.current) return;
+
       if (retryCountRef.current < maxRetries) {
         retryCountRef.current++;
         const delay = calculateBackoffDelay(
@@ -482,11 +486,14 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         );
         console.log(`[Bridge] Reconnecting in ${delay}ms (${retryCountRef.current}/${maxRetries})`);
         updateStatus('reconnecting');
-        reconnectTimeoutRef.current = setTimeout(connectFn, delay);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          if (isMountedRef.current) connectFn();
+        }, delay);
       } else {
         console.warn(`[Bridge] Max retries reached. Cooldown: ${maxRetryCooldown}ms`);
         clearTimeoutSafe(maxRetryCooldownRef);
         maxRetryCooldownRef.current = setTimeout(() => {
+          if (!isMountedRef.current) return;
           console.log('[Bridge] Cooldown complete, reconnecting...');
           retryCountRef.current = 0;
           connectFn();
@@ -557,16 +564,23 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         }
 
         cleanup();
-        scheduleReconnect(connect);
+
+        // Only schedule reconnect if still mounted
+        if (isMountedRef.current) {
+          scheduleReconnect(connect);
+        }
       });
 
       // Helper for triggering reconnection
       const triggerReconnect = () => {
+        if (!isMountedRef.current) return;
         setIsServiceWorkerAlive(false);
         updateStatus('reconnecting');
         retryCountRef.current = 0;
         isConnectingRef.current = false;
-        setTimeout(() => {
+        clearTimeoutSafe(triggerReconnectTimeoutRef);
+        triggerReconnectTimeoutRef.current = setTimeout(() => {
+          if (!isMountedRef.current) return;
           cleanup();
           connect();
         }, CONFIG.RECONNECT_DELAY);
