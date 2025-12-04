@@ -108,16 +108,38 @@ export class BridgeStore<T> implements CentralStore<T> {
     }
   };
 
+  private stateSyncSequence = 0;
+  private pendingStateSync = false;
+
   private setupStateSync() {
     // Listen for state updates from service worker
     if (this.bridge.on) {
       this.bridge.on(`store:${this.storeName}:stateChanged`, () => {
+        // Prevent concurrent state fetches to avoid race conditions
+        if (this.pendingStateSync) {
+          return;
+        }
+
+        this.pendingStateSync = true;
+        const currentSequence = ++this.stateSyncSequence;
+
         // get new state from service worker
-        this.bridge.send<void, T>(`store:${this.storeName}:getState`).then((newState) => {
-          this.previousState = this.currentState;
-          this.currentState = newState;
-          this.notifyListeners();
-        });
+        this.bridge
+          .send<void, T>(`store:${this.storeName}:getState`)
+          .then((newState) => {
+            // Only apply if this is still the latest request
+            if (currentSequence === this.stateSyncSequence) {
+              this.previousState = this.currentState;
+              this.currentState = newState;
+              this.notifyListeners();
+            }
+          })
+          .catch((error) => {
+            console.error(`BridgeStore[${this.storeName}]: Failed to sync state:`, error);
+          })
+          .finally(() => {
+            this.pendingStateSync = false;
+          });
       });
     } else {
       console.warn(`BridgeStore[${this.storeName}]: Bridge does not support event listening`);

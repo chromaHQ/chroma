@@ -246,12 +246,32 @@ class BridgeRuntimeManager {
   private async processMessage(context: PipelineContext): Promise<BridgeResponse> {
     const { request } = context;
 
+    // Handle internal ping message for health checks
+    if (request.key === '__ping__') {
+      return {
+        id: request.id,
+        data: { pong: true, timestamp: Date.now() },
+        timestamp: Date.now(),
+      };
+    }
+
+    this.logger.debug(`Processing message: ${request.key} (id: ${request.id})`);
+
     const handler = this.resolveHandler(request.key);
     const middlewares = MiddlewareRegistry.pipeline(request.key);
 
-    const data = await this.runPipeline(middlewares, context, () =>
-      handler.handle(request.payload),
+    this.logger.debug(
+      `Running pipeline for: ${request.key} with ${middlewares.length} middlewares`,
     );
+
+    const data = await this.runPipeline(middlewares, context, async () => {
+      this.logger.debug(`Executing handler for: ${request.key}`);
+      const result = await handler.handle(request.payload);
+      this.logger.debug(`Handler completed for: ${request.key}`, { resultType: typeof result });
+      return result;
+    });
+
+    this.logger.debug(`Message processed: ${request.key} (id: ${request.id})`);
 
     return {
       id: request.id,
@@ -265,14 +285,24 @@ class BridgeRuntimeManager {
    */
   private resolveHandler(key: string): MessageHandler {
     try {
+      this.logger.debug(`Resolving handler for key: "${key}"`);
+
+      if (!this.container.isBound(key)) {
+        this.logger.error(`Handler "${key}" is not bound in container`);
+        throw new Error(`Handler "${key}" is not registered`);
+      }
+
       const handler = this.container.get(key) as MessageHandler;
 
       if (!handler || typeof handler.handle !== 'function') {
+        this.logger.error(`Handler "${key}" does not have a handle method`, { handler });
         throw new Error(`Handler "${key}" does not implement MessageHandler interface`);
       }
 
+      this.logger.debug(`Successfully resolved handler for key: "${key}"`);
       return handler;
     } catch (error) {
+      this.logger.error(`Failed to resolve handler "${key}":`, error);
       throw new Error(`Failed to resolve handler "${key}": ${(error as Error).message}`);
     }
   }

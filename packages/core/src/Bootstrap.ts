@@ -412,8 +412,22 @@ class ApplicationBootstrap {
           isFirstStore = false;
         }
 
-        this.registerMessageClass(classes.GetStoreStateMessage, `store:${store.def.name}:getState`);
-        this.registerMessageClass(classes.SetStoreStateMessage, `store:${store.def.name}:setState`);
+        await this.registerMessageClass(
+          classes.GetStoreStateMessage,
+          `store:${store.def.name}:getState`,
+        );
+        await this.registerMessageClass(
+          classes.SetStoreStateMessage,
+          `store:${store.def.name}:setState`,
+        );
+
+        // Register reset handler if available
+        if (classes.ResetStoreMessage) {
+          await this.registerMessageClass(
+            classes.ResetStoreMessage,
+            `store:${store.def.name}:reset`,
+          );
+        }
 
         this.logger.debug(`✅ Initialized store: ${store.def.name}`);
       }

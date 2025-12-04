@@ -1,6 +1,6 @@
 import { useEffect, useState, createContext, useCallback, useMemo, useRef } from 'react';
 
-type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error' | 'reconnecting';
 
 interface Bridge {
   send: <Req = unknown, Res = unknown>(
@@ -12,6 +12,7 @@ interface Bridge {
   on: (key: string, handler: (payload: any) => void) => void;
   off: (key: string, handler: (payload: any) => void) => void;
   isConnected: boolean;
+  ping: () => Promise<boolean>;
 }
 
 export interface BridgeContextValue {
@@ -19,6 +20,7 @@ export interface BridgeContextValue {
   status: ConnectionStatus;
   error: Error | null;
   reconnect: () => void;
+  isServiceWorkerAlive: boolean;
 }
 
 export const BridgeContext = createContext<BridgeContextValue | null>(null);
@@ -27,25 +29,35 @@ interface Props {
   children: React.ReactNode;
   retryAfter?: number;
   maxRetries?: number;
+  pingInterval?: number; // How often to ping the service worker (ms)
   onConnectionChange?: (status: ConnectionStatus) => void;
   onError?: (error: Error) => void;
 }
 
 export const BridgeProvider: React.FC<Props> = ({
   children,
-  retryAfter = 1500,
-  maxRetries = 5,
+  retryAfter = 1000,
+  maxRetries = 10,
+  pingInterval = 5000,
   onConnectionChange,
   onError,
 }) => {
   const [bridge, setBridge] = useState<Bridge | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [error, setError] = useState<Error | null>(null);
+  const [isServiceWorkerAlive, setIsServiceWorkerAlive] = useState(false);
 
   const portRef = useRef<chrome.runtime.Port | null>(null);
 
   const pendingRef = useRef(
-    new Map<string, { resolve: (data: any) => void; reject: (error: Error) => void }>(),
+    new Map<
+      string,
+      {
+        resolve: (data: any) => void;
+        reject: (error: Error) => void;
+        timeout: ReturnType<typeof setTimeout>;
+      }
+    >(),
   );
 
   const eventListenersRef = useRef(new Map<string, Set<(payload: any) => void>>());
@@ -55,6 +67,8 @@ export const BridgeProvider: React.FC<Props> = ({
   const retryCountRef = useRef(0);
   const isConnectingRef = useRef(false);
   const errorCheckIntervalRef = useRef<any>(null);
+  const pingIntervalRef = useRef<any>(null);
+  const consecutiveTimeoutsRef = useRef(0);
 
   const updateStatus = useCallback(
     (newStatus: ConnectionStatus) => {
@@ -84,6 +98,11 @@ export const BridgeProvider: React.FC<Props> = ({
       errorCheckIntervalRef.current = null;
     }
 
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = null;
+    }
+
     if (portRef.current) {
       try {
         portRef.current.disconnect();
@@ -94,12 +113,14 @@ export const BridgeProvider: React.FC<Props> = ({
       portRef.current = null;
     }
 
-    pendingRef.current.forEach(({ reject }) => {
+    pendingRef.current.forEach(({ reject, timeout }) => {
+      clearTimeout(timeout);
       reject(new Error('Bridge disconnected'));
     });
 
     pendingRef.current.clear();
     eventListenersRef.current.clear();
+    setIsServiceWorkerAlive(false);
 
     setBridge(null);
     isConnectingRef.current = false;
@@ -169,12 +190,18 @@ export const BridgeProvider: React.FC<Props> = ({
       port.onMessage.addListener((msg) => {
         // Handle request/response messages
         if (msg.id && pendingRef.current.has(msg.id)) {
-          const { resolve, reject } = pendingRef.current.get(msg.id)!;
+          const pending = pendingRef.current.get(msg.id)!;
+
+          // Clear the timeout since we got a response
+          clearTimeout(pending.timeout);
+
+          // Reset consecutive timeouts counter on successful response
+          consecutiveTimeoutsRef.current = 0;
 
           if (msg.error) {
-            reject(new Error(msg.error));
+            pending.reject(new Error(msg.error));
           } else {
-            resolve(msg.data);
+            pending.resolve(msg.data);
           }
 
           pendingRef.current.delete(msg.id);
@@ -230,19 +257,37 @@ export const BridgeProvider: React.FC<Props> = ({
             }
 
             const id = `msg${uidRef.current++}`;
-            pendingRef.current.set(id, { resolve, reject });
 
             // Add timeout for requests
             const timeout = setTimeout(() => {
               if (pendingRef.current.has(id)) {
                 pendingRef.current.delete(id);
+                consecutiveTimeoutsRef.current++;
+
+                // If we get multiple consecutive timeouts, the service worker is likely dead
+                if (consecutiveTimeoutsRef.current >= 2) {
+                  console.warn(
+                    '[Bridge] Multiple timeouts detected, service worker may be unresponsive. Reconnecting...',
+                  );
+                  setIsServiceWorkerAlive(false);
+                  updateStatus('reconnecting');
+
+                  // Force reconnect
+                  cleanup();
+                  retryCountRef.current = 0;
+                  isConnectingRef.current = false;
+                  setTimeout(connect, 500);
+                }
+
                 reject(
                   new Error(
-                    `Request timed out after ${timeoutDuration} ms for key: ${key} with id: ${id} and payload: ${JSON.stringify(payload)}`,
+                    `Request timed out after ${timeoutDuration} ms for key: ${key} with id: ${id}`,
                   ),
                 );
               }
             }, timeoutDuration);
+
+            pendingRef.current.set(id, { resolve, reject, timeout });
 
             try {
               portRef.current.postMessage({ id, key, payload });
@@ -257,7 +302,8 @@ export const BridgeProvider: React.FC<Props> = ({
 
                   // If this message is still pending, reject it
                   if (pendingRef.current.has(id)) {
-                    clearTimeout(timeout);
+                    const pending = pendingRef.current.get(id);
+                    if (pending) clearTimeout(pending.timeout);
                     pendingRef.current.delete(id);
                     reject(new Error(errorMessage || 'Async send failed'));
                   }
@@ -269,7 +315,8 @@ export const BridgeProvider: React.FC<Props> = ({
                 throw new Error(chrome.runtime.lastError.message || 'Failed to send message');
               }
             } catch (e) {
-              clearTimeout(timeout);
+              const pending = pendingRef.current.get(id);
+              if (pending) clearTimeout(pending.timeout);
               pendingRef.current.delete(id);
 
               // Also check for runtime errors in catch block and clear them
@@ -319,14 +366,40 @@ export const BridgeProvider: React.FC<Props> = ({
           }
         },
 
+        ping: async (): Promise<boolean> => {
+          try {
+            // Use a short timeout for ping
+            await bridgeInstance.send('__ping__', undefined, 2000);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+
         isConnected: true,
       };
 
       setBridge(bridgeInstance);
       updateStatus('connected');
+      setIsServiceWorkerAlive(true);
       setError(null);
       retryCountRef.current = 0;
+      consecutiveTimeoutsRef.current = 0;
       isConnectingRef.current = false;
+
+      // Start ping interval to detect service worker health
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+      }
+      pingIntervalRef.current = setInterval(async () => {
+        if (bridgeInstance && portRef.current) {
+          const alive = await bridgeInstance.ping();
+          setIsServiceWorkerAlive(alive);
+          if (!alive) {
+            console.warn('[Bridge] Service worker ping failed, may be unresponsive');
+          }
+        }
+      }, pingInterval);
     } catch (e) {
       isConnectingRef.current = false;
       const error = e instanceof Error ? e : new Error('Connection failed');
@@ -337,10 +410,11 @@ export const BridgeProvider: React.FC<Props> = ({
         reconnectTimeoutRef.current = setTimeout(connect, retryAfter);
       }
     }
-  }, [retryAfter, maxRetries, handleError, updateStatus, cleanup]);
+  }, [retryAfter, maxRetries, pingInterval, handleError, updateStatus, cleanup]);
 
   const reconnect = useCallback(() => {
     retryCountRef.current = 0;
+    consecutiveTimeoutsRef.current = 0;
 
     updateStatus('connecting');
     connect();
@@ -357,8 +431,9 @@ export const BridgeProvider: React.FC<Props> = ({
       status,
       error,
       reconnect,
+      isServiceWorkerAlive,
     }),
-    [bridge, status, error, reconnect],
+    [bridge, status, error, reconnect, isServiceWorkerAlive],
   );
 
   return <BridgeContext.Provider value={contextValue}>{children}</BridgeContext.Provider>;

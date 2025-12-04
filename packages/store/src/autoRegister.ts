@@ -9,14 +9,40 @@ export function autoRegisterStoreHandlers<T>(
     throw new Error('autoRegisterStoreHandlers: store parameter is required');
   }
 
+  // Validate store has required methods
+  if (typeof store.getState !== 'function') {
+    throw new Error('autoRegisterStoreHandlers: store must have getState method');
+  }
+  if (typeof store.setState !== 'function') {
+    throw new Error('autoRegisterStoreHandlers: store must have setState method');
+  }
+
+  console.log(`[Store] Creating handlers for store "${storeName}"`, {
+    hasGetState: typeof store.getState === 'function',
+    hasSetState: typeof store.setState === 'function',
+  });
+
   // Create classes with the store instance bound at creation time
   class AutoGetStoreStateMessage {
     handle(): T {
+      console.log(`[Store] GetState handler called for "${storeName}"`);
+
       if (!store) {
+        console.error(`[Store] Store instance not available for "${storeName}"`);
         throw new Error('Store instance not available');
       }
 
-      return store.getState();
+      try {
+        const state = store.getState();
+        console.log(`[Store] GetState returning state for "${storeName}"`, {
+          hasState: state !== undefined && state !== null,
+          stateType: typeof state,
+        });
+        return state;
+      } catch (error) {
+        console.error(`[Store] GetState failed for "${storeName}":`, error);
+        throw error;
+      }
     }
   }
 
@@ -70,9 +96,31 @@ export function autoRegisterStoreHandlers<T>(
     }
   }
 
+  class AutoResetStoreMessage {
+    handle(): T {
+      console.log(`[Store] Reset handler called for "${storeName}"`);
+
+      if (!store) {
+        console.error(`[Store] Store instance not available for "${storeName}"`);
+        throw new Error('Store instance not available');
+      }
+
+      try {
+        if (typeof store.reset === 'function') {
+          store.reset();
+        }
+        return store.getState();
+      } catch (error) {
+        console.error(`[Store] Reset failed for "${storeName}":`, error);
+        throw error;
+      }
+    }
+  }
+
   // Return the registered message classes for reference (if needed)
   return {
     GetStoreStateMessage: AutoGetStoreStateMessage,
     SetStoreStateMessage: AutoSetStoreStateMessage,
+    ResetStoreMessage: AutoResetStoreMessage,
   };
 }

@@ -2,5 +2,10 @@ import { useContext } from 'react';
 import { BridgeContext } from '../BridgeProvider';
 
 export const useConnectionStatus = () => {
-  return useContext(BridgeContext)?.status;
+  const context = useContext(BridgeContext);
+  return {
+    status: context?.status,
+    isServiceWorkerAlive: context?.isServiceWorkerAlive ?? false,
+    reconnect: context?.reconnect,
+  };
 };
