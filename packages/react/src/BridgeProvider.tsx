@@ -81,7 +81,7 @@ interface BridgeMessage {
 const CONFIG = {
   RETRY_AFTER: 1000,
   MAX_RETRIES: 10,
-  PING_INTERVAL: 5000,
+  PING_INTERVAL: 2000, // Check every 2s for faster SW death detection
   MAX_RETRY_COOLDOWN: 30000,
   DEFAULT_TIMEOUT: 10000,
   MAX_RETRY_DELAY: 30000,
@@ -323,6 +323,7 @@ interface HealthMonitorDeps {
   pingInterval: number;
   setIsServiceWorkerAlive: (alive: boolean) => void;
   onReconnectNeeded: () => void;
+  rejectAllPendingRequests: (message: string) => void;
 }
 
 function startHealthMonitor(deps: HealthMonitorDeps): void {
@@ -333,6 +334,7 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
     pingInterval,
     setIsServiceWorkerAlive,
     onReconnectNeeded,
+    rejectAllPendingRequests,
   } = deps;
 
   clearIntervalSafe(pingIntervalRef);
@@ -369,9 +371,13 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
 
     if (consecutivePingFailuresRef.current >= CONFIG.CONSECUTIVE_FAILURE_THRESHOLD) {
       if (BRIDGE_ENABLE_LOGS) {
-        console.warn('[Bridge] Service worker unresponsive, reconnecting...');
+        console.warn(
+          '[Bridge] Service worker unresponsive, rejecting pending requests and reconnecting...',
+        );
       }
       consecutivePingFailuresRef.current = 0;
+      // Immediately reject all pending requests - don't wait for their individual timeouts
+      rejectAllPendingRequests('Service worker unresponsive');
       onReconnectNeeded();
     }
   }, pingInterval);
@@ -463,7 +469,20 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   );
 
   // Cleanup
-  const cleanup = useCallback(() => {
+  const cleanup = useCallback((emitDisconnect = true) => {
+    // Emit disconnected event BEFORE cleanup so listeners can react
+    if (emitDisconnect) {
+      eventListenersRef.current.get('bridge:disconnected')?.forEach((handler) => {
+        try {
+          handler(undefined);
+        } catch (err) {
+          if (BRIDGE_ENABLE_LOGS) {
+            console.warn('[Bridge] bridge:disconnected handler error:', err);
+          }
+        }
+      });
+    }
+
     clearTimeoutSafe(reconnectTimeoutRef);
     clearTimeoutSafe(triggerReconnectTimeoutRef);
     clearIntervalSafe(errorCheckIntervalRef);
@@ -484,7 +503,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       reject(new Error('Bridge disconnected'));
     });
     pendingRequestsRef.current.clear();
-    eventListenersRef.current.clear();
+    // NOTE: We do NOT clear eventListenersRef here - listeners should persist across reconnections
 
     // Reset state
     setIsServiceWorkerAlive(false);
@@ -760,6 +779,16 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         }
       });
 
+      // Helper to reject all pending requests (used by health monitor)
+      const rejectAllPendingRequests = (message: string) => {
+        pendingRequestsRef.current.forEach(({ reject, timeout }) => {
+          clearTimeout(timeout);
+          reject(new Error(message));
+        });
+        pendingRequestsRef.current.clear();
+        consecutiveTimeoutsRef.current = 0; // Reset so we don't double-trigger reconnection
+      };
+
       // Start health monitoring
       startHealthMonitor({
         bridge: bridgeInstance,
@@ -768,6 +797,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         pingInterval,
         setIsServiceWorkerAlive,
         onReconnectNeeded: triggerReconnect,
+        rejectAllPendingRequests,
       });
     } catch (e) {
       isConnectingRef.current = false;
@@ -840,7 +870,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       clearTimeoutSafe(maxRetryCooldownRef);
-      cleanup();
+      cleanup(false); // Don't emit disconnect on unmount - component is being destroyed
     };
   }, [connect, cleanup]);
 

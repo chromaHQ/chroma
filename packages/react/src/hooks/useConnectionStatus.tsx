@@ -18,14 +18,30 @@ export interface ConnectionStatusResult {
   isLoading: boolean;
 }
 
-interface StoreReadyMethods {
+/**
+ * Store interface for readiness checking.
+ * Pass the store instance directly (e.g., `appStore`), NOT via useStore() hook.
+ */
+export interface StoreReadyMethods {
   onReady: (callback: () => void) => () => void;
   isReady: () => boolean;
 }
 
 /**
- * Hook to get unified connection status
- * @param store Optional store to include in readiness check
+ * Hook to get unified connection status.
+ *
+ * @param store Optional store INSTANCE to include in readiness check.
+ *              Pass the store directly (e.g., `appStore`), NOT via useStore() hook.
+ *
+ * @example
+ * ```tsx
+ * // Correct - pass store instance directly:
+ * import { appStore } from './stores/app';
+ * const { isLoading } = useConnectionStatus(appStore);
+ *
+ * // WRONG - don't use useStore() to get the store:
+ * const store = useStore(s => s); // This won't work!
+ * ```
  */
 export const useConnectionStatus = (store?: StoreReadyMethods): ConnectionStatusResult => {
   const context = useContext(BridgeContext);

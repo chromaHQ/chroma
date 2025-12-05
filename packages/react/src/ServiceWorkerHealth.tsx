@@ -1,0 +1,285 @@
+/**
+ * ServiceWorkerHealth - Single source of truth for service worker health status.
+ *
+ * This module provides a centralized health monitoring system that:
+ * 1. Monitors the service worker connection via the bridge
+ * 2. Broadcasts status changes to all subscribers (bridge, store, UI)
+ * 3. Provides a simple `isHealthy` boolean for UI components
+ *
+ * Usage:
+ * ```tsx
+ * // In your app root, wrap with ServiceWorkerHealthProvider:
+ * <BridgeProvider>
+ *   <ServiceWorkerHealthProvider>
+ *     <App />
+ *   </ServiceWorkerHealthProvider>
+ * </BridgeProvider>
+ *
+ * // In any component, use the hook:
+ * const { isHealthy, isRecovering } = useServiceWorkerHealth();
+ *
+ * if (!isHealthy) {
+ *   return <Spinner message="Reconnecting..." />;
+ * }
+ * ```
+ */
+
+import {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  type ReactNode,
+  type FC,
+} from 'react';
+import { BridgeContext, type BridgeContextValue } from './BridgeProvider';
+
+// ============================================================================
+// Types
+// ============================================================================
+
+export type HealthStatus = 'healthy' | 'unhealthy' | 'recovering' | 'unknown';
+
+export interface ServiceWorkerHealthContextValue {
+  /** Current health status */
+  status: HealthStatus;
+  /** Simple boolean: true when SW is connected and responsive */
+  isHealthy: boolean;
+  /** True when actively trying to reconnect */
+  isRecovering: boolean;
+  /** True during initial connection or recovery */
+  isLoading: boolean;
+  /** Timestamp of last successful ping (ms) */
+  lastHealthyAt: number | null;
+  /** Force a reconnection attempt */
+  forceReconnect: () => void;
+}
+
+interface ServiceWorkerHealthProviderProps {
+  children: ReactNode;
+  /**
+   * Optional callback when health status changes.
+   * Useful for stores to listen and react (e.g., pause operations).
+   */
+  onHealthChange?: (status: HealthStatus, isHealthy: boolean) => void;
+}
+
+// Global subscribers for non-React consumers (like BridgeStore)
+type HealthSubscriber = (status: HealthStatus, isHealthy: boolean) => void;
+const globalSubscribers = new Set<HealthSubscriber>();
+
+// ============================================================================
+// Global API for non-React consumers
+// ============================================================================
+
+/**
+ * Subscribe to health status changes from outside React.
+ * Returns an unsubscribe function.
+ *
+ * @example
+ * ```ts
+ * // In BridgeStore
+ * const unsubscribe = subscribeToHealth((status, isHealthy) => {
+ *   if (!isHealthy) {
+ *     // Pause operations, show loading state
+ *   } else {
+ *     // Resume operations
+ *   }
+ * });
+ * ```
+ */
+export function subscribeToHealth(callback: HealthSubscriber): () => void {
+  globalSubscribers.add(callback);
+  return () => {
+    globalSubscribers.delete(callback);
+  };
+}
+
+// Current health state (for synchronous access)
+let currentHealthStatus: HealthStatus = 'unknown';
+let currentIsHealthy = false;
+
+/**
+ * Get current health status synchronously.
+ * Useful for non-React code that needs immediate access.
+ */
+export function getHealthStatus(): { status: HealthStatus; isHealthy: boolean } {
+  return { status: currentHealthStatus, isHealthy: currentIsHealthy };
+}
+
+// Broadcast to all global subscribers
+function broadcastHealthChange(status: HealthStatus, isHealthy: boolean): void {
+  currentHealthStatus = status;
+  currentIsHealthy = isHealthy;
+  globalSubscribers.forEach((callback) => {
+    try {
+      callback(status, isHealthy);
+    } catch (e) {
+      console.error('[ServiceWorkerHealth] Subscriber error:', e);
+    }
+  });
+}
+
+// ============================================================================
+// Context
+// ============================================================================
+
+const ServiceWorkerHealthContext = createContext<ServiceWorkerHealthContextValue | null>(null);
+
+// ============================================================================
+// Provider
+// ============================================================================
+
+export const ServiceWorkerHealthProvider: FC<ServiceWorkerHealthProviderProps> = ({
+  children,
+  onHealthChange,
+}) => {
+  const bridgeContext = useContext(BridgeContext);
+  const [lastHealthyAt, setLastHealthyAt] = useState<number | null>(null);
+
+  // Extract primitive values to avoid unnecessary re-renders from context object changes
+  const bridgeStatus = bridgeContext?.status;
+  const isServiceWorkerAlive = bridgeContext?.isServiceWorkerAlive ?? false;
+
+  // Derive health status from bridge context (using primitives for stable deps)
+  const derivedStatus = useMemo((): HealthStatus => {
+    if (!bridgeStatus) return 'unknown';
+
+    // Connected and SW responding = healthy
+    if (bridgeStatus === 'connected' && isServiceWorkerAlive) {
+      return 'healthy';
+    }
+
+    // Actively reconnecting
+    if (bridgeStatus === 'reconnecting' || bridgeStatus === 'connecting') {
+      return 'recovering';
+    }
+
+    // Connected but SW not responding, or disconnected/error
+    return 'unhealthy';
+  }, [bridgeStatus, isServiceWorkerAlive]);
+
+  const isHealthy = derivedStatus === 'healthy';
+  const isRecovering = derivedStatus === 'recovering';
+  const isLoading = derivedStatus === 'recovering' || derivedStatus === 'unknown';
+
+  // Track last healthy timestamp
+  useEffect(() => {
+    if (isHealthy) {
+      setLastHealthyAt(Date.now());
+    }
+  }, [isHealthy]);
+
+  // Broadcast changes to global subscribers and callback
+  useEffect(() => {
+    broadcastHealthChange(derivedStatus, isHealthy);
+    onHealthChange?.(derivedStatus, isHealthy);
+  }, [derivedStatus, isHealthy, onHealthChange]);
+
+  // Force reconnect function
+  const forceReconnect = useCallback(() => {
+    bridgeContext?.reconnect();
+  }, [bridgeContext]);
+
+  const value = useMemo(
+    (): ServiceWorkerHealthContextValue => ({
+      status: derivedStatus,
+      isHealthy,
+      isRecovering,
+      isLoading,
+      lastHealthyAt,
+      forceReconnect,
+    }),
+    [derivedStatus, isHealthy, isRecovering, isLoading, lastHealthyAt, forceReconnect],
+  );
+
+  return (
+    <ServiceWorkerHealthContext.Provider value={value}>
+      {children}
+    </ServiceWorkerHealthContext.Provider>
+  );
+};
+
+// ============================================================================
+// Hook
+// ============================================================================
+
+/**
+ * Hook to access service worker health status.
+ *
+ * @returns Health status object with `isHealthy` boolean
+ * @throws Error if used outside ServiceWorkerHealthProvider
+ *
+ * @example
+ * ```tsx
+ * function App() {
+ *   const { isHealthy, isRecovering } = useServiceWorkerHealth();
+ *
+ *   if (!isHealthy) {
+ *     return (
+ *       <div className="loading-overlay">
+ *         <Spinner />
+ *         <p>{isRecovering ? 'Reconnecting...' : 'Connection lost'}</p>
+ *       </div>
+ *     );
+ *   }
+ *
+ *   return <MainApp />;
+ * }
+ * ```
+ */
+export function useServiceWorkerHealth(): ServiceWorkerHealthContextValue {
+  const context = useContext(ServiceWorkerHealthContext);
+
+  if (!context) {
+    throw new Error(
+      'useServiceWorkerHealth must be used within a ServiceWorkerHealthProvider. ' +
+        'Wrap your app with <ServiceWorkerHealthProvider> inside <BridgeProvider>.',
+    );
+  }
+
+  return context;
+}
+
+// ============================================================================
+// Optional: Standalone hook that doesn't require provider (for simpler setups)
+// ============================================================================
+
+/**
+ * Lightweight hook that directly consumes BridgeContext without needing
+ * ServiceWorkerHealthProvider. Use this for simple cases where you don't
+ * need the global subscription API.
+ *
+ * @example
+ * ```tsx
+ * function App() {
+ *   const { isHealthy } = useServiceWorkerHealthSimple();
+ *   if (!isHealthy) return <Spinner />;
+ *   return <MainApp />;
+ * }
+ * ```
+ */
+export function useServiceWorkerHealthSimple(): {
+  isHealthy: boolean;
+  isRecovering: boolean;
+  isLoading: boolean;
+  reconnect: () => void;
+} {
+  const bridgeContext = useContext(BridgeContext);
+
+  const isHealthy =
+    bridgeContext?.status === 'connected' && bridgeContext?.isServiceWorkerAlive === true;
+
+  const isRecovering =
+    bridgeContext?.status === 'reconnecting' || bridgeContext?.status === 'connecting';
+
+  const isLoading = !isHealthy && (isRecovering || !bridgeContext);
+
+  const reconnect = useCallback(() => {
+    bridgeContext?.reconnect();
+  }, [bridgeContext]);
+
+  return { isHealthy, isRecovering, isLoading, reconnect };
+}

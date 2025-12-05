@@ -45,11 +45,15 @@ export class BridgeStore<T> implements CentralStore<T> {
 
   // Store handler references for cleanup (prevents memory leaks)
   private reconnectHandler: (() => void) | null = null;
+  private disconnectHandler: (() => void) | null = null;
   private stateChangedHandler: (() => void) | null = null;
 
   // Debounce timer for state sync (optimization for rapid updates)
   private stateSyncDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly stateSyncDebounceMs: number = 16; // ~1 frame at 60fps
+
+  // Reconnect delay timer (to allow SW to bootstrap before re-initializing)
+  private reconnectDelayTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     bridge: BridgeWithEvents,
@@ -76,15 +80,34 @@ export class BridgeStore<T> implements CentralStore<T> {
 
   private setupReconnectListener() {
     if (this.bridge.on) {
+      // Listen for disconnection to immediately mark store as not ready
+      this.disconnectHandler = () => {
+        if (STORE_ENABLE_LOGS) {
+          console.log(
+            `BridgeStore[${this.storeName}]: Bridge disconnected, marking store as not ready`,
+          );
+        }
+        this.ready = false;
+        // Note: We don't notify readyCallbacks here - they're for "became ready" events
+      };
+      this.bridge.on('bridge:disconnected', this.disconnectHandler);
+
+      // Listen for reconnection to re-initialize
       this.reconnectHandler = () => {
         if (STORE_ENABLE_LOGS) {
           console.log(
             `BridgeStore[${this.storeName}]: Bridge reconnected, waiting for SW to initialize...`,
           );
         }
+        // Clear any pending reconnect delay timer to prevent double-init
+        if (this.reconnectDelayTimer) {
+          clearTimeout(this.reconnectDelayTimer);
+          this.reconnectDelayTimer = null;
+        }
         // Add a small delay to allow SW to fully bootstrap its handlers
         // This prevents "No handler found" errors after SW restart
-        setTimeout(() => {
+        this.reconnectDelayTimer = setTimeout(() => {
+          this.reconnectDelayTimer = null;
           if (STORE_ENABLE_LOGS) {
             console.log(
               `BridgeStore[${this.storeName}]: Re-initializing after SW startup delay...`,
@@ -361,11 +384,21 @@ export class BridgeStore<T> implements CentralStore<T> {
       this.stateSyncDebounceTimer = null;
     }
 
+    // Clear reconnect delay timer
+    if (this.reconnectDelayTimer) {
+      clearTimeout(this.reconnectDelayTimer);
+      this.reconnectDelayTimer = null;
+    }
+
     // Remove bridge event listeners to prevent memory leaks
     if (this.bridge.off) {
       if (this.reconnectHandler) {
         this.bridge.off('bridge:connected', this.reconnectHandler);
         this.reconnectHandler = null;
+      }
+      if (this.disconnectHandler) {
+        this.bridge.off('bridge:disconnected', this.disconnectHandler);
+        this.disconnectHandler = null;
       }
       if (this.stateChangedHandler) {
         this.bridge.off(`store:${this.storeName}:stateChanged`, this.stateChangedHandler);
