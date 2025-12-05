@@ -641,7 +641,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
     // The SW restart retry path handles its own backoff
 
     isConnectingRef.current = true;
-    cleanup();
+    cleanup(false); // Internal reset before attempting new connection
 
     if (!chrome?.runtime?.connect) {
       handleError(new Error('Chrome runtime not available'));
@@ -674,7 +674,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
             if (BRIDGE_ENABLE_LOGS) {
               console.warn('[Bridge] Service worker not ready (may be restarting)...');
             }
-            cleanup();
+            cleanup(false); // No active port yet, just reset before retrying
             isConnectingRef.current = false;
             // Use SW restart retry - doesn't count against max retries
             scheduleSwRestartReconnect(connect);
@@ -730,7 +730,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         clearTimeoutSafe(triggerReconnectTimeoutRef);
         triggerReconnectTimeoutRef.current = setTimeout(() => {
           if (!isMountedRef.current) return;
-          cleanup();
+          cleanup(false); // Already notified when entering reconnecting state
           connect();
         }, CONFIG.RECONNECT_DELAY);
       };

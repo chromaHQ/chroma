@@ -254,7 +254,9 @@ export const ServiceWorkerHealthProvider: FC<ServiceWorkerHealthProviderProps> =
  * }
  * ```
  */
-export function useServiceWorkerHealth(options?: ServiceWorkerHealthOptions): ServiceWorkerHealthResult {
+export function useServiceWorkerHealth(
+  options?: ServiceWorkerHealthOptions,
+): ServiceWorkerHealthResult {
   const context = useContext(ServiceWorkerHealthContext);
 
   if (!context) {
@@ -305,7 +307,8 @@ export function useServiceWorkerHealthSimple(options?: ServiceWorkerHealthOption
   const storeReady = useStoreReady(options?.store);
 
   const isHealthy =
-    bridgeContext?.status === 'connected' && bridgeContext?.isServiceWorkerAlive === true &&
+    bridgeContext?.status === 'connected' &&
+    bridgeContext?.isServiceWorkerAlive === true &&
     (options?.store ? storeReady : true);
 
   const isRecovering =
