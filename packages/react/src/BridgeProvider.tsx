@@ -145,6 +145,7 @@ interface BridgeFactoryDeps {
   messageIdRef: MutableRefObject<number>;
   isConnectedRef: MutableRefObject<boolean>;
   consecutiveTimeoutsRef: MutableRefObject<number>;
+  reconnectionGracePeriodRef: MutableRefObject<boolean>;
   defaultTimeout: number;
   onReconnectNeeded: () => void;
 }
@@ -157,6 +158,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
     messageIdRef,
     isConnectedRef,
     consecutiveTimeoutsRef,
+    reconnectionGracePeriodRef,
     defaultTimeout,
     onReconnectNeeded,
   } = deps;
@@ -186,14 +188,23 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
         if (!pendingRequestsRef.current.has(id)) return;
 
         pendingRequestsRef.current.delete(id);
-        consecutiveTimeoutsRef.current++;
 
-        if (BRIDGE_ENABLE_LOGS) {
-          console.warn(`[Bridge] Request timed out: ${key} (${timeoutDuration}ms)`);
+        // Don't count timeouts during grace period (SW still starting up)
+        if (!reconnectionGracePeriodRef.current) {
+          consecutiveTimeoutsRef.current++;
         }
 
-        // Trigger reconnect on consecutive timeouts
-        if (consecutiveTimeoutsRef.current >= CONFIG.CONSECUTIVE_FAILURE_THRESHOLD) {
+        if (BRIDGE_ENABLE_LOGS) {
+          console.warn(
+            `[Bridge] Request timed out: ${key} (${timeoutDuration}ms)${reconnectionGracePeriodRef.current ? ' [grace period]' : ''}`,
+          );
+        }
+
+        // Trigger reconnect on consecutive timeouts (but not during grace period)
+        if (
+          !reconnectionGracePeriodRef.current &&
+          consecutiveTimeoutsRef.current >= CONFIG.CONSECUTIVE_FAILURE_THRESHOLD
+        ) {
           if (BRIDGE_ENABLE_LOGS) {
             console.warn(
               `[Bridge] ${consecutiveTimeoutsRef.current} consecutive timeouts, reconnecting...`,
@@ -403,6 +414,9 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   const errorCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const consecutivePingFailuresRef = useRef(0);
   const consecutiveTimeoutsRef = useRef(0);
+
+  // Grace period after reconnection - ignore timeouts while SW is starting up
+  const reconnectionGracePeriodRef = useRef(false);
 
   // Message handling refs
   const pendingRequestsRef = useRef(new Map<string, PendingRequest>());
@@ -708,6 +722,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         messageIdRef,
         isConnectedRef,
         consecutiveTimeoutsRef,
+        reconnectionGracePeriodRef,
         defaultTimeout,
         onReconnectNeeded: triggerReconnect,
       });
@@ -722,6 +737,16 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       swRestartRetryCountRef.current = 0; // Reset SW restart counter on success
       consecutiveTimeoutsRef.current = 0;
       isConnectingRef.current = false;
+
+      // Start grace period - give SW time to fully initialize handlers
+      // This prevents "Bridge reconnecting due to timeouts" right after connection
+      reconnectionGracePeriodRef.current = true;
+      setTimeout(() => {
+        reconnectionGracePeriodRef.current = false;
+        if (BRIDGE_ENABLE_LOGS) {
+          console.log('[Bridge] Grace period ended, timeout monitoring active');
+        }
+      }, 3000); // 3 second grace period
 
       // Emit bridge:connected event for stores to re-initialize
       // This is dispatched directly to local listeners (not over the port)

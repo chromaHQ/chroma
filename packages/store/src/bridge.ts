@@ -78,10 +78,20 @@ export class BridgeStore<T> implements CentralStore<T> {
     if (this.bridge.on) {
       this.reconnectHandler = () => {
         if (STORE_ENABLE_LOGS) {
-          console.log(`BridgeStore[${this.storeName}]: Bridge reconnected, re-initializing...`);
+          console.log(
+            `BridgeStore[${this.storeName}]: Bridge reconnected, waiting for SW to initialize...`,
+          );
         }
-        // Reset state and re-initialize on reconnection
-        this.forceInitialize();
+        // Add a small delay to allow SW to fully bootstrap its handlers
+        // This prevents "No handler found" errors after SW restart
+        setTimeout(() => {
+          if (STORE_ENABLE_LOGS) {
+            console.log(
+              `BridgeStore[${this.storeName}]: Re-initializing after SW startup delay...`,
+            );
+          }
+          this.forceInitialize();
+        }, 500);
       };
       this.bridge.on('bridge:connected', this.reconnectHandler);
     }
