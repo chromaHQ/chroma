@@ -14,4 +14,5 @@ export {
   getHealthStatus,
   type HealthStatus,
   type ServiceWorkerHealthContextValue,
+  type ServiceWorkerHealthResult,
 } from './ServiceWorkerHealth';

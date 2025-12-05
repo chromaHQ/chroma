@@ -15,8 +15,9 @@
  *   </ServiceWorkerHealthProvider>
  * </BridgeProvider>
  *
- * // In any component, use the hook:
- * const { isHealthy, isRecovering } = useServiceWorkerHealth();
+ * // In any component, use the hook (optionally pass your store instance):
+ * import { appStore } from './stores/app';
+ * const { isHealthy, isRecovering } = useServiceWorkerHealth({ store: appStore });
  *
  * if (!isHealthy) {
  *   return <Spinner message="Reconnecting..." />;
@@ -31,10 +32,12 @@ import {
   useEffect,
   useCallback,
   useMemo,
+  useSyncExternalStore,
   type ReactNode,
   type FC,
 } from 'react';
 import { BridgeContext, type BridgeContextValue } from './BridgeProvider';
+import type { StoreReadyMethods } from './hooks/useConnectionStatus';
 
 // ============================================================================
 // Types
@@ -57,6 +60,11 @@ export interface ServiceWorkerHealthContextValue {
   forceReconnect: () => void;
 }
 
+export interface ServiceWorkerHealthResult extends ServiceWorkerHealthContextValue {
+  /** Optional readiness state for attached store */
+  storeReady: boolean;
+}
+
 interface ServiceWorkerHealthProviderProps {
   children: ReactNode;
   /**
@@ -64,6 +72,22 @@ interface ServiceWorkerHealthProviderProps {
    * Useful for stores to listen and react (e.g., pause operations).
    */
   onHealthChange?: (status: HealthStatus, isHealthy: boolean) => void;
+}
+
+interface ServiceWorkerHealthOptions {
+  store?: StoreReadyMethods;
+}
+
+const noopSubscribe = () => () => {};
+const alwaysTrue = () => true;
+const ssrFallback = () => false;
+
+function useStoreReady(store?: StoreReadyMethods): boolean {
+  return useSyncExternalStore(
+    store?.onReady ?? noopSubscribe,
+    store?.isReady ?? alwaysTrue,
+    ssrFallback,
+  );
 }
 
 // Global subscribers for non-React consumers (like BridgeStore)
@@ -215,7 +239,7 @@ export const ServiceWorkerHealthProvider: FC<ServiceWorkerHealthProviderProps> =
  * @example
  * ```tsx
  * function App() {
- *   const { isHealthy, isRecovering } = useServiceWorkerHealth();
+ *   const { isHealthy, isRecovering } = useServiceWorkerHealth({ store: appStore });
  *
  *   if (!isHealthy) {
  *     return (
@@ -230,7 +254,7 @@ export const ServiceWorkerHealthProvider: FC<ServiceWorkerHealthProviderProps> =
  * }
  * ```
  */
-export function useServiceWorkerHealth(): ServiceWorkerHealthContextValue {
+export function useServiceWorkerHealth(options?: ServiceWorkerHealthOptions): ServiceWorkerHealthResult {
   const context = useContext(ServiceWorkerHealthContext);
 
   if (!context) {
@@ -240,7 +264,16 @@ export function useServiceWorkerHealth(): ServiceWorkerHealthContextValue {
     );
   }
 
-  return context;
+  const storeReady = useStoreReady(options?.store);
+  const combinedHealthy = context.isHealthy && (options?.store ? storeReady : true);
+  const combinedLoading = context.isLoading || (options?.store ? !storeReady : false);
+
+  return {
+    ...context,
+    isHealthy: combinedHealthy,
+    isLoading: combinedLoading,
+    storeReady,
+  };
 }
 
 // ============================================================================
@@ -261,25 +294,29 @@ export function useServiceWorkerHealth(): ServiceWorkerHealthContextValue {
  * }
  * ```
  */
-export function useServiceWorkerHealthSimple(): {
+export function useServiceWorkerHealthSimple(options?: ServiceWorkerHealthOptions): {
   isHealthy: boolean;
   isRecovering: boolean;
   isLoading: boolean;
   reconnect: () => void;
+  storeReady: boolean;
 } {
   const bridgeContext = useContext(BridgeContext);
+  const storeReady = useStoreReady(options?.store);
 
   const isHealthy =
-    bridgeContext?.status === 'connected' && bridgeContext?.isServiceWorkerAlive === true;
+    bridgeContext?.status === 'connected' && bridgeContext?.isServiceWorkerAlive === true &&
+    (options?.store ? storeReady : true);
 
   const isRecovering =
     bridgeContext?.status === 'reconnecting' || bridgeContext?.status === 'connecting';
 
-  const isLoading = !isHealthy && (isRecovering || !bridgeContext);
+  const isLoading =
+    (!isHealthy && (isRecovering || !bridgeContext)) || (options?.store ? !storeReady : false);
 
   const reconnect = useCallback(() => {
     bridgeContext?.reconnect();
   }, [bridgeContext]);
 
-  return { isHealthy, isRecovering, isLoading, reconnect };
+  return { isHealthy, isRecovering, isLoading, reconnect, storeReady };
 }

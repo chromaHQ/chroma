@@ -470,8 +470,10 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
 
   // Cleanup
   const cleanup = useCallback((emitDisconnect = true) => {
-    // Emit disconnected event BEFORE cleanup so listeners can react
-    if (emitDisconnect) {
+    const wasConnected = isConnectedRef.current || portRef.current !== null;
+
+    // Emit disconnected event BEFORE cleanup so listeners can react, but only if we were connected
+    if (emitDisconnect && wasConnected) {
       eventListenersRef.current.get('bridge:disconnected')?.forEach((handler) => {
         try {
           handler(undefined);
