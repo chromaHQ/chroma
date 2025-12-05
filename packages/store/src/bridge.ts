@@ -1,5 +1,11 @@
 import type { CentralStore } from './types.js';
 
+// Shared logging flag (aligned with BridgeProvider)
+const STORE_ENABLE_LOGS: boolean =
+  typeof globalThis !== 'undefined' && (globalThis as any).__CHROMA_ENABLE_LOGS__ === false
+    ? false
+    : true;
+
 // Import bridge types from chroma core/react
 export interface Bridge {
   send: <Req = unknown, Res = unknown>(
@@ -63,7 +69,9 @@ export class BridgeStore<T> implements CentralStore<T> {
   private setupReconnectListener() {
     if (this.bridge.on) {
       this.bridge.on('bridge:connected', () => {
-        console.log(`BridgeStore[${this.storeName}]: Bridge reconnected, re-initializing...`);
+        if (STORE_ENABLE_LOGS) {
+          console.log(`BridgeStore[${this.storeName}]: Bridge reconnected, re-initializing...`);
+        }
         // Reset state and re-initialize on reconnection
         this.forceInitialize();
       });
@@ -88,9 +96,11 @@ export class BridgeStore<T> implements CentralStore<T> {
     try {
       // Check max attempts to prevent infinite retries
       if (this.initializationAttempts > this.maxInitializationAttempts) {
-        console.error(
-          `BridgeStore[${this.storeName}]: Max initialization attempts (${this.maxInitializationAttempts}) reached, giving up`,
-        );
+        if (STORE_ENABLE_LOGS) {
+          console.error(
+            `BridgeStore[${this.storeName}]: Max initialization attempts (${this.maxInitializationAttempts}) reached, giving up`,
+          );
+        }
         this.isInitializing = false;
         return;
       }
@@ -99,9 +109,11 @@ export class BridgeStore<T> implements CentralStore<T> {
       if (!this.bridge.isConnected) {
         // Only log on first attempt or every 3rd attempt to reduce spam
         if (this.initializationAttempts === 1 || this.initializationAttempts % 3 === 0) {
-          console.log(
-            `BridgeStore[${this.storeName}]: Waiting for bridge connection (attempt ${this.initializationAttempts}/${this.maxInitializationAttempts})...`,
-          );
+          if (STORE_ENABLE_LOGS) {
+            console.log(
+              `BridgeStore[${this.storeName}]: Waiting for bridge connection (attempt ${this.initializationAttempts}/${this.maxInitializationAttempts})...`,
+            );
+          }
         }
 
         // Use exponential backoff: 500ms, 1s, 2s, 4s... capped at 5s
@@ -126,23 +138,31 @@ export class BridgeStore<T> implements CentralStore<T> {
 
       this.ready = true;
       this.isInitializing = false;
-      console.log(`BridgeStore[${this.storeName}]: Initialized successfully`);
+      if (STORE_ENABLE_LOGS) {
+        console.log(`BridgeStore[${this.storeName}]: Initialized successfully`);
+      }
       this.notifyReady();
     } catch (error) {
       this.isInitializing = false;
 
-      console.error(
-        `BridgeStore[${this.storeName}]: Failed to initialize (attempt ${this.initializationAttempts}):`,
-        error,
-      );
+      if (STORE_ENABLE_LOGS) {
+        console.error(
+          `BridgeStore[${this.storeName}]: Failed to initialize (attempt ${this.initializationAttempts}):`,
+          error,
+        );
+      }
 
       // Retry initialization after a delay if we haven't exceeded max attempts
       if (this.initializationAttempts < this.maxInitializationAttempts) {
         const delay = Math.min(1000 * Math.pow(2, this.initializationAttempts - 1), 10000);
-        console.log(`BridgeStore[${this.storeName}]: Retrying initialization in ${delay}ms...`);
+        if (STORE_ENABLE_LOGS) {
+          console.log(`BridgeStore[${this.storeName}]: Retrying initialization in ${delay}ms...`);
+        }
         this.initializationTimer = setTimeout(() => this.initialize(), delay);
       } else {
-        console.error(`BridgeStore[${this.storeName}]: Max attempts reached, cannot retry`);
+        if (STORE_ENABLE_LOGS) {
+          console.error(`BridgeStore[${this.storeName}]: Max attempts reached, cannot retry`);
+        }
       }
     }
   };
@@ -174,20 +194,26 @@ export class BridgeStore<T> implements CentralStore<T> {
             }
           })
           .catch((error) => {
-            console.error(`BridgeStore[${this.storeName}]: Failed to sync state:`, error);
+            if (STORE_ENABLE_LOGS) {
+              console.error(`BridgeStore[${this.storeName}]: Failed to sync state:`, error);
+            }
           })
           .finally(() => {
             this.pendingStateSync = false;
           });
       });
     } else {
-      console.warn(`BridgeStore[${this.storeName}]: Bridge does not support event listening`);
+      if (STORE_ENABLE_LOGS) {
+        console.warn(`BridgeStore[${this.storeName}]: Bridge does not support event listening`);
+      }
     }
   }
 
   private notifyListeners = () => {
     if (!this.listeners) {
-      console.warn('BridgeStore: listeners not initialized');
+      if (STORE_ENABLE_LOGS) {
+        console.warn('BridgeStore: listeners not initialized');
+      }
       return;
     }
 
@@ -208,22 +234,30 @@ export class BridgeStore<T> implements CentralStore<T> {
 
     if (typeof partial === 'function') {
       if (this.currentState === null) {
-        console.warn('BridgeStore: Cannot execute function update, state not initialized');
+        if (STORE_ENABLE_LOGS) {
+          console.warn('BridgeStore: Cannot execute function update, state not initialized');
+        }
         return;
       }
-      actualUpdate = partial(this.currentState);
+      if ((globalThis as any).__CHROMA_ENABLE_LOGS__ !== false) {
+        console.warn('BridgeStore: Cannot execute function update, state not initialized');
+      }
     } else {
       actualUpdate = partial;
     }
 
     // Check if bridge is connected before attempting update
     if (!this.bridge.isConnected) {
-      console.warn(
-        `BridgeStore[${this.storeName}]: Bridge disconnected, state update queued locally only`,
-      );
-      // Still apply optimistic update but don't try to send
-      this.applyOptimisticUpdate(actualUpdate, replace);
-      return;
+      if (STORE_ENABLE_LOGS) {
+        console.warn(
+          `BridgeStore[${this.storeName}]: Bridge disconnected, state update queued locally only`,
+        );
+      }
+      if ((globalThis as any).__CHROMA_ENABLE_LOGS__ !== false) {
+        console.warn(
+          `BridgeStore[${this.storeName}]: Bridge disconnected, state update queued locally only`,
+        );
+      }
     }
 
     // Store state for potential rollback
@@ -236,13 +270,17 @@ export class BridgeStore<T> implements CentralStore<T> {
     const payload = { partial: actualUpdate, replace };
 
     this.bridge.send(`store:${this.storeName}:setState`, payload).catch((error: any) => {
-      console.error(`BridgeStore[${this.storeName}]: Failed to update state via bridge:`, error);
+      if (STORE_ENABLE_LOGS) {
+        console.error(`BridgeStore[${this.storeName}]: Failed to update state via bridge:`, error);
+      }
 
       // Rollback optimistic update on failure
       if (stateBeforeUpdate !== null) {
-        console.warn(
-          `BridgeStore[${this.storeName}]: Rolling back optimistic update due to bridge error`,
-        );
+        if (STORE_ENABLE_LOGS) {
+          console.warn(
+            `BridgeStore[${this.storeName}]: Rolling back optimistic update due to bridge error`,
+          );
+        }
         this.previousState = this.currentState;
         this.currentState = stateBeforeUpdate;
         this.notifyListeners();
@@ -264,12 +302,13 @@ export class BridgeStore<T> implements CentralStore<T> {
 
   subscribe = (listener: (state: T, prevState: T) => void): (() => void) => {
     if (!this.listeners) {
-      console.error('BridgeStore: Cannot subscribe, listeners not initialized');
+      if (STORE_ENABLE_LOGS) {
+        console.error('BridgeStore: Cannot subscribe, listeners not initialized');
+      }
       return () => {};
     }
 
     this.listeners.add(listener);
-
     // Call listener with current state if available
     if (this.currentState && this.previousState) {
       listener(this.currentState, this.previousState);
@@ -293,7 +332,6 @@ export class BridgeStore<T> implements CentralStore<T> {
     if (this.listeners) {
       this.listeners.clear();
     }
-
     this.readyCallbacks.clear();
   };
 
@@ -310,7 +348,6 @@ export class BridgeStore<T> implements CentralStore<T> {
       // If already ready, call immediately
       callback();
     } else {
-      // Otherwise, add to callbacks
       this.readyCallbacks.add(callback);
     }
 
@@ -324,9 +361,11 @@ export class BridgeStore<T> implements CentralStore<T> {
     if (this.initialState !== null) {
       // Check if bridge is connected
       if (!this.bridge.isConnected) {
-        console.warn(
-          `BridgeStore[${this.storeName}]: Bridge disconnected, reset applied locally only`,
-        );
+        if (STORE_ENABLE_LOGS) {
+          console.warn(
+            `BridgeStore[${this.storeName}]: Bridge disconnected, reset applied locally only`,
+          );
+        }
         this.previousState = this.currentState;
         this.currentState = { ...this.initialState };
         this.notifyListeners();
@@ -343,18 +382,24 @@ export class BridgeStore<T> implements CentralStore<T> {
 
       // Send reset command to service worker
       this.bridge.send(`store:${this.storeName}:reset`).catch((error: any) => {
-        console.error(`BridgeStore[${this.storeName}]: Failed to reset state via bridge:`, error);
+        if (STORE_ENABLE_LOGS) {
+          console.error(`BridgeStore[${this.storeName}]: Failed to reset state via bridge:`, error);
+        }
 
         // Rollback on failure
         if (stateBeforeReset !== null) {
-          console.warn(`BridgeStore[${this.storeName}]: Rolling back reset due to bridge error`);
+          if (STORE_ENABLE_LOGS) {
+            console.warn(`BridgeStore[${this.storeName}]: Rolling back reset due to bridge error`);
+          }
           this.previousState = this.currentState;
           this.currentState = stateBeforeReset;
           this.notifyListeners();
         }
       });
     } else {
-      console.warn(`BridgeStore[${this.storeName}]: Cannot reset, initial state not available`);
+      if (STORE_ENABLE_LOGS) {
+        console.warn(`BridgeStore[${this.storeName}]: Cannot reset, initial state not available`);
+      }
     }
   };
 
@@ -367,7 +412,9 @@ export class BridgeStore<T> implements CentralStore<T> {
    * Force re-initialization of the store (useful for debugging or after reconnection)
    */
   public forceInitialize = async (): Promise<void> => {
-    console.debug(`BridgeStore[${this.storeName}]: Force re-initialization requested`);
+    if (STORE_ENABLE_LOGS) {
+      console.debug(`BridgeStore[${this.storeName}]: Force re-initialization requested`);
+    }
 
     // Clear any pending initialization
     if (this.initializationTimer) {

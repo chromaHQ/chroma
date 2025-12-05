@@ -10,6 +10,13 @@ import {
   type MutableRefObject,
 } from 'react';
 
+// Global bridge logging toggle; wired to Bootstrap.enableLogs at runtime
+// Consumers can set `window.__CHROMA_ENABLE_LOGS__ = false` to silence logs
+const BRIDGE_ENABLE_LOGS: boolean =
+  typeof window !== 'undefined' && (window as any).__CHROMA_ENABLE_LOGS__ !== undefined
+    ? Boolean((window as any).__CHROMA_ENABLE_LOGS__)
+    : true;
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -184,13 +191,17 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
         pendingRequestsRef.current.delete(id);
         consecutiveTimeoutsRef.current++;
 
-        console.warn(`[Bridge] Request timed out: ${key} (${timeoutDuration}ms)`);
+        if (BRIDGE_ENABLE_LOGS) {
+          console.warn(`[Bridge] Request timed out: ${key} (${timeoutDuration}ms)`);
+        }
 
         // Trigger reconnect on consecutive timeouts
         if (consecutiveTimeoutsRef.current >= CONFIG.CONSECUTIVE_FAILURE_THRESHOLD) {
-          console.warn(
-            `[Bridge] ${consecutiveTimeoutsRef.current} consecutive timeouts, reconnecting...`,
-          );
+          if (BRIDGE_ENABLE_LOGS) {
+            console.warn(
+              `[Bridge] ${consecutiveTimeoutsRef.current} consecutive timeouts, reconnecting...`,
+            );
+          }
           rejectAllPending('Bridge reconnecting due to timeouts');
           consecutiveTimeoutsRef.current = 0;
           onReconnectNeeded();
@@ -239,14 +250,18 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
 
   const broadcast = (key: string, payload: unknown): void => {
     if (!portRef.current) {
-      console.warn('[Bridge] Cannot broadcast - disconnected');
+      if (BRIDGE_ENABLE_LOGS) {
+        console.warn('[Bridge] Cannot broadcast - disconnected');
+      }
       return;
     }
 
     try {
       portRef.current.postMessage({ type: 'broadcast', key, payload });
     } catch (e) {
-      console.warn('[Bridge] Broadcast failed:', e);
+      if (BRIDGE_ENABLE_LOGS) {
+        console.warn('[Bridge] Broadcast failed:', e);
+      }
     }
   };
 
@@ -331,10 +346,14 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
     }
 
     consecutivePingFailuresRef.current++;
-    console.warn(`[Bridge] Ping failed (${consecutivePingFailuresRef.current}x)`);
+    if (BRIDGE_ENABLE_LOGS) {
+      console.warn(`[Bridge] Ping failed (${consecutivePingFailuresRef.current}x)`);
+    }
 
     if (consecutivePingFailuresRef.current >= CONFIG.CONSECUTIVE_FAILURE_THRESHOLD) {
-      console.warn('[Bridge] Service worker unresponsive, reconnecting...');
+      if (BRIDGE_ENABLE_LOGS) {
+        console.warn('[Bridge] Service worker unresponsive, reconnecting...');
+      }
       consecutivePingFailuresRef.current = 0;
       onReconnectNeeded();
     }
@@ -470,7 +489,9 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         try {
           handler(message.payload);
         } catch (err) {
-          console.warn('[Bridge] Event handler error:', err);
+          if (BRIDGE_ENABLE_LOGS) {
+            console.warn('[Bridge] Event handler error:', err);
+          }
         }
       });
     }
@@ -488,17 +509,25 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
           retryAfter,
           CONFIG.MAX_RETRY_DELAY,
         );
-        console.log(`[Bridge] Reconnecting in ${delay}ms (${retryCountRef.current}/${maxRetries})`);
+        if (BRIDGE_ENABLE_LOGS) {
+          console.log(
+            `[Bridge] Reconnecting in ${delay}ms (${retryCountRef.current}/${maxRetries})`,
+          );
+        }
         updateStatus('reconnecting');
         reconnectTimeoutRef.current = setTimeout(() => {
           if (isMountedRef.current) connectFn();
         }, delay);
       } else {
-        console.warn(`[Bridge] Max retries reached. Cooldown: ${maxRetryCooldown}ms`);
+        if (BRIDGE_ENABLE_LOGS) {
+          console.warn(`[Bridge] Max retries reached. Cooldown: ${maxRetryCooldown}ms`);
+        }
         clearTimeoutSafe(maxRetryCooldownRef);
         maxRetryCooldownRef.current = setTimeout(() => {
           if (!isMountedRef.current) return;
-          console.log('[Bridge] Cooldown complete, reconnecting...');
+          if (BRIDGE_ENABLE_LOGS) {
+            console.log('[Bridge] Cooldown complete, reconnecting...');
+          }
           retryCountRef.current = 0;
           connectFn();
         }, maxRetryCooldown);
@@ -520,9 +549,11 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         CONFIG.SW_RESTART_MAX_DELAY,
       );
 
-      console.log(
-        `[Bridge] Service worker not ready, retrying in ${delay}ms (attempt ${swRestartRetryCountRef.current})`,
-      );
+      if (BRIDGE_ENABLE_LOGS) {
+        console.log(
+          `[Bridge] Service worker not ready, retrying in ${delay}ms (attempt ${swRestartRetryCountRef.current})`,
+        );
+      }
       updateStatus('reconnecting');
 
       reconnectTimeoutRef.current = setTimeout(() => {
@@ -536,7 +567,9 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   const connect = useCallback(() => {
     if (isConnectingRef.current) return;
     if (retryCountRef.current >= maxRetries) {
-      console.warn('[Bridge] Waiting for cooldown...');
+      if (BRIDGE_ENABLE_LOGS) {
+        console.warn('[Bridge] Waiting for cooldown...');
+      }
       return;
     }
 
@@ -565,7 +598,9 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         if (err) {
           clearIntervalSafe(errorCheckIntervalRef);
           if (err.includes('Receiving end does not exist')) {
-            console.warn('[Bridge] Service worker not ready (may be restarting)...');
+            if (BRIDGE_ENABLE_LOGS) {
+              console.warn('[Bridge] Service worker not ready (may be restarting)...');
+            }
             cleanup();
             isConnectingRef.current = false;
             // Use SW restart retry - doesn't count against max retries
@@ -583,7 +618,9 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       port.onMessage.addListener(handleMessage);
 
       port.onDisconnect.addListener(() => {
-        console.warn('[Bridge] Disconnected');
+        if (BRIDGE_ENABLE_LOGS) {
+          console.warn('[Bridge] Disconnected');
+        }
         isConnectingRef.current = false;
 
         const disconnectError = consumeRuntimeError();
@@ -602,7 +639,9 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
           // Use SW restart retry for "Receiving end does not exist" errors
           // This doesn't count against max retries and keeps trying indefinitely
           if (isSwRestart) {
-            console.log('[Bridge] Service worker stopped, will retry until available...');
+            if (BRIDGE_ENABLE_LOGS) {
+              console.log('[Bridge] Service worker stopped, will retry until available...');
+            }
             scheduleSwRestartReconnect(connect);
           } else {
             scheduleReconnect(connect);
@@ -654,7 +693,9 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         try {
           handler({ timestamp: Date.now() });
         } catch (err) {
-          console.warn('[Bridge] bridge:connected handler error:', err);
+          if (BRIDGE_ENABLE_LOGS) {
+            console.warn('[Bridge] bridge:connected handler error:', err);
+          }
         }
       });
 
@@ -705,7 +746,9 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       const currentBridge = bridgeRef.current;
 
       if (currentStatus === 'disconnected' || currentStatus === 'error') {
-        console.log('[Bridge] Tab visible, reconnecting...');
+        if (BRIDGE_ENABLE_LOGS) {
+          console.log('[Bridge] Tab visible, reconnecting...');
+        }
         retryCountRef.current = 0;
         connect();
       } else if (currentStatus === 'connected' && currentBridge) {
@@ -713,7 +756,9 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
           // Check mounted before acting on async result
           if (!isMountedRef.current) return;
           if (!alive) {
-            console.warn('[Bridge] Tab visible but unresponsive, reconnecting...');
+            if (BRIDGE_ENABLE_LOGS) {
+              console.warn('[Bridge] Tab visible but unresponsive, reconnecting...');
+            }
             retryCountRef.current = 0;
             isConnectingRef.current = false;
             cleanup();
