@@ -414,6 +414,14 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   const bridgeRef = useRef(bridge);
   const isMountedRef = useRef(true);
 
+  // Reset isMountedRef on every render to handle React Strict Mode double-mounting
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
@@ -805,7 +813,6 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      isMountedRef.current = false;
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       clearTimeoutSafe(maxRetryCooldownRef);
       cleanup();
