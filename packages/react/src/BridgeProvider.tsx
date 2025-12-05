@@ -587,7 +587,9 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         isConnectingRef.current = false;
 
         const disconnectError = consumeRuntimeError();
-        if (disconnectError) {
+        const isSwRestart = disconnectError?.includes('Receiving end does not exist');
+
+        if (disconnectError && !isSwRestart) {
           handleError(new Error(disconnectError));
         } else {
           updateStatus('disconnected');
@@ -597,7 +599,14 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
 
         // Only schedule reconnect if still mounted
         if (isMountedRef.current) {
-          scheduleReconnect(connect);
+          // Use SW restart retry for "Receiving end does not exist" errors
+          // This doesn't count against max retries and keeps trying indefinitely
+          if (isSwRestart) {
+            console.log('[Bridge] Service worker stopped, will retry until available...');
+            scheduleSwRestartReconnect(connect);
+          } else {
+            scheduleReconnect(connect);
+          }
         }
       });
 
