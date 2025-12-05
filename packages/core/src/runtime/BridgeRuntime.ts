@@ -115,9 +115,8 @@ class BridgeRuntimeManager {
 
     this.setupPortListener();
 
-    if (this.keepAlive) {
-      this.startKeepAlive();
-    }
+    // Note: keep-alive is started dynamically when first port connects
+    // and stopped when all ports disconnect (see setupMessageHandler)
 
     this.isInitialized = true;
   }
@@ -178,6 +177,11 @@ class BridgeRuntimeManager {
     // Track connected ports for broadcasting
     this.connectedPorts.add(port);
 
+    // Start keep-alive when first port connects
+    if (this.keepAlive && this.connectedPorts.size === 1) {
+      this.startKeepAlive();
+    }
+
     port.onMessage.addListener(async (message: BridgeRequest | BroadcastMessage) => {
       try {
         // Handle broadcast messages
@@ -225,6 +229,11 @@ class BridgeRuntimeManager {
         chrome.runtime.lastError;
       } else {
         this.logger.info(`📴 Port disconnected: ${port.name}`);
+      }
+
+      // Stop keep-alive if no more connected ports (allow SW to sleep)
+      if (this.keepAlive && this.connectedPorts.size === 0) {
+        this.stopKeepAlive();
       }
     });
   }
