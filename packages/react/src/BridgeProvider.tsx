@@ -12,10 +12,7 @@ import {
 
 // Global bridge logging toggle; wired to Bootstrap.enableLogs at runtime
 // Consumers can set `window.__CHROMA_ENABLE_LOGS__ = false` to silence logs
-const BRIDGE_ENABLE_LOGS: boolean =
-  typeof window !== 'undefined' && (window as any).__CHROMA_ENABLE_LOGS__ !== undefined
-    ? Boolean((window as any).__CHROMA_ENABLE_LOGS__)
-    : true;
+const BRIDGE_ENABLE_LOGS: boolean = true;
 
 // ============================================================================
 // Types
@@ -566,12 +563,9 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   // Main connection logic
   const connect = useCallback(() => {
     if (isConnectingRef.current) return;
-    if (retryCountRef.current >= maxRetries) {
-      if (BRIDGE_ENABLE_LOGS) {
-        console.warn('[Bridge] Waiting for cooldown...');
-      }
-      return;
-    }
+
+    // Reset retry count if we've been waiting - don't block reconnection attempts
+    // The SW restart retry path handles its own backoff
 
     isConnectingRef.current = true;
     cleanup();
@@ -624,28 +618,22 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         isConnectingRef.current = false;
 
         const disconnectError = consumeRuntimeError();
-        const isSwRestart = disconnectError?.includes('Receiving end does not exist');
 
-        if (disconnectError && !isSwRestart) {
-          handleError(new Error(disconnectError));
-        } else {
-          updateStatus('disconnected');
+        // Log the error for debugging but don't treat it as fatal
+        if (disconnectError && BRIDGE_ENABLE_LOGS) {
+          console.warn('[Bridge] Disconnect error:', disconnectError);
         }
 
+        updateStatus('disconnected');
         cleanup();
 
         // Only schedule reconnect if still mounted
+        // Always use SW restart retry (infinite) since any disconnect could be SW stopping
         if (isMountedRef.current) {
-          // Use SW restart retry for "Receiving end does not exist" errors
-          // This doesn't count against max retries and keeps trying indefinitely
-          if (isSwRestart) {
-            if (BRIDGE_ENABLE_LOGS) {
-              console.log('[Bridge] Service worker stopped, will retry until available...');
-            }
-            scheduleSwRestartReconnect(connect);
-          } else {
-            scheduleReconnect(connect);
+          if (BRIDGE_ENABLE_LOGS) {
+            console.log('[Bridge] Will retry until service worker is available...');
           }
+          scheduleSwRestartReconnect(connect);
         }
       });
 
@@ -745,11 +733,17 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       const currentStatus = statusRef.current;
       const currentBridge = bridgeRef.current;
 
-      if (currentStatus === 'disconnected' || currentStatus === 'error') {
+      if (
+        currentStatus === 'disconnected' ||
+        currentStatus === 'error' ||
+        currentStatus === 'reconnecting'
+      ) {
         if (BRIDGE_ENABLE_LOGS) {
           console.log('[Bridge] Tab visible, reconnecting...');
         }
         retryCountRef.current = 0;
+        swRestartRetryCountRef.current = 0;
+        isConnectingRef.current = false; // Reset so connect() doesn't early-exit
         connect();
       } else if (currentStatus === 'connected' && currentBridge) {
         currentBridge.ping().then((alive) => {

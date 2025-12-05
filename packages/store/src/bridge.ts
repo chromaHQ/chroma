@@ -43,6 +43,14 @@ export class BridgeStore<T> implements CentralStore<T> {
   private initializationTimer: ReturnType<typeof setTimeout> | null = null;
   private isInitializing: boolean = false;
 
+  // Store handler references for cleanup (prevents memory leaks)
+  private reconnectHandler: (() => void) | null = null;
+  private stateChangedHandler: (() => void) | null = null;
+
+  // Debounce timer for state sync (optimization for rapid updates)
+  private stateSyncDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly stateSyncDebounceMs: number = 16; // ~1 frame at 60fps
+
   constructor(
     bridge: BridgeWithEvents,
     initialState?: T,
@@ -68,13 +76,14 @@ export class BridgeStore<T> implements CentralStore<T> {
 
   private setupReconnectListener() {
     if (this.bridge.on) {
-      this.bridge.on('bridge:connected', () => {
+      this.reconnectHandler = () => {
         if (STORE_ENABLE_LOGS) {
           console.log(`BridgeStore[${this.storeName}]: Bridge reconnected, re-initializing...`);
         }
         // Reset state and re-initialize on reconnection
         this.forceInitialize();
-      });
+      };
+      this.bridge.on('bridge:connected', this.reconnectHandler);
     }
   }
 
@@ -170,38 +179,51 @@ export class BridgeStore<T> implements CentralStore<T> {
   private stateSyncSequence = 0;
   private pendingStateSync = false;
 
+  private fetchAndApplyState() {
+    // Prevent concurrent state fetches to avoid race conditions
+    if (this.pendingStateSync) {
+      return;
+    }
+
+    this.pendingStateSync = true;
+    const currentSequence = ++this.stateSyncSequence;
+
+    // Get new state from service worker
+    this.bridge
+      .send<void, T>(`store:${this.storeName}:getState`)
+      .then((newState) => {
+        // Only apply if this is still the latest request
+        if (currentSequence === this.stateSyncSequence) {
+          this.previousState = this.currentState;
+          this.currentState = newState;
+          this.notifyListeners();
+        }
+      })
+      .catch((error) => {
+        if (STORE_ENABLE_LOGS) {
+          console.error(`BridgeStore[${this.storeName}]: Failed to sync state:`, error);
+        }
+      })
+      .finally(() => {
+        this.pendingStateSync = false;
+      });
+  }
+
   private setupStateSync() {
     // Listen for state updates from service worker
     if (this.bridge.on) {
-      this.bridge.on(`store:${this.storeName}:stateChanged`, () => {
-        // Prevent concurrent state fetches to avoid race conditions
-        if (this.pendingStateSync) {
-          return;
+      this.stateChangedHandler = () => {
+        // Debounce rapid state change events to reduce network overhead
+        if (this.stateSyncDebounceTimer) {
+          clearTimeout(this.stateSyncDebounceTimer);
         }
 
-        this.pendingStateSync = true;
-        const currentSequence = ++this.stateSyncSequence;
-
-        // get new state from service worker
-        this.bridge
-          .send<void, T>(`store:${this.storeName}:getState`)
-          .then((newState) => {
-            // Only apply if this is still the latest request
-            if (currentSequence === this.stateSyncSequence) {
-              this.previousState = this.currentState;
-              this.currentState = newState;
-              this.notifyListeners();
-            }
-          })
-          .catch((error) => {
-            if (STORE_ENABLE_LOGS) {
-              console.error(`BridgeStore[${this.storeName}]: Failed to sync state:`, error);
-            }
-          })
-          .finally(() => {
-            this.pendingStateSync = false;
-          });
-      });
+        this.stateSyncDebounceTimer = setTimeout(() => {
+          this.stateSyncDebounceTimer = null;
+          this.fetchAndApplyState();
+        }, this.stateSyncDebounceMs);
+      };
+      this.bridge.on(`store:${this.storeName}:stateChanged`, this.stateChangedHandler);
     } else {
       if (STORE_ENABLE_LOGS) {
         console.warn(`BridgeStore[${this.storeName}]: Bridge does not support event listening`);
@@ -239,9 +261,8 @@ export class BridgeStore<T> implements CentralStore<T> {
         }
         return;
       }
-      if ((globalThis as any).__CHROMA_ENABLE_LOGS__ !== false) {
-        console.warn('BridgeStore: Cannot execute function update, state not initialized');
-      }
+      // Execute the function to get the actual update
+      actualUpdate = partial(this.currentState);
     } else {
       actualUpdate = partial;
     }
@@ -249,11 +270,6 @@ export class BridgeStore<T> implements CentralStore<T> {
     // Check if bridge is connected before attempting update
     if (!this.bridge.isConnected) {
       if (STORE_ENABLE_LOGS) {
-        console.warn(
-          `BridgeStore[${this.storeName}]: Bridge disconnected, state update queued locally only`,
-        );
-      }
-      if ((globalThis as any).__CHROMA_ENABLE_LOGS__ !== false) {
         console.warn(
           `BridgeStore[${this.storeName}]: Bridge disconnected, state update queued locally only`,
         );
@@ -327,6 +343,24 @@ export class BridgeStore<T> implements CentralStore<T> {
     if (this.initializationTimer) {
       clearTimeout(this.initializationTimer);
       this.initializationTimer = null;
+    }
+
+    // Clear debounce timer
+    if (this.stateSyncDebounceTimer) {
+      clearTimeout(this.stateSyncDebounceTimer);
+      this.stateSyncDebounceTimer = null;
+    }
+
+    // Remove bridge event listeners to prevent memory leaks
+    if (this.bridge.off) {
+      if (this.reconnectHandler) {
+        this.bridge.off('bridge:connected', this.reconnectHandler);
+        this.reconnectHandler = null;
+      }
+      if (this.stateChangedHandler) {
+        this.bridge.off(`store:${this.storeName}:stateChanged`, this.stateChangedHandler);
+        this.stateChangedHandler = null;
+      }
     }
 
     if (this.listeners) {
