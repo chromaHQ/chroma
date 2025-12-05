@@ -327,8 +327,17 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
   clearIntervalSafe(pingIntervalRef);
   consecutivePingFailuresRef.current = 0;
 
+  if (BRIDGE_ENABLE_LOGS) {
+    console.log(`[Bridge] Starting health monitor (ping every ${pingInterval}ms)`);
+  }
+
   pingIntervalRef.current = setInterval(async () => {
-    if (!bridge.isConnected) return;
+    if (!bridge.isConnected) {
+      if (BRIDGE_ENABLE_LOGS) {
+        console.log('[Bridge] Health check skipped - not connected');
+      }
+      return;
+    }
 
     const alive = await bridge.ping();
 
@@ -537,7 +546,16 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   // This handles the case when the service worker is restarting and not yet available
   const scheduleSwRestartReconnect = useCallback(
     (connectFn: () => void) => {
-      if (!isMountedRef.current) return;
+      if (BRIDGE_ENABLE_LOGS) {
+        console.log('[Bridge] scheduleSwRestartReconnect called, isMounted:', isMountedRef.current);
+      }
+
+      if (!isMountedRef.current) {
+        if (BRIDGE_ENABLE_LOGS) {
+          console.log('[Bridge] Not mounted, skipping SW restart reconnect');
+        }
+        return;
+      }
 
       swRestartRetryCountRef.current++;
       const delay = calculateBackoffDelay(
@@ -554,6 +572,9 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       updateStatus('reconnecting');
 
       reconnectTimeoutRef.current = setTimeout(() => {
+        if (BRIDGE_ENABLE_LOGS) {
+          console.log('[Bridge] SW restart timeout fired, isMounted:', isMountedRef.current);
+        }
         if (isMountedRef.current) connectFn();
       }, delay);
     },
@@ -562,7 +583,16 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
 
   // Main connection logic
   const connect = useCallback(() => {
-    if (isConnectingRef.current) return;
+    if (BRIDGE_ENABLE_LOGS) {
+      console.log('[Bridge] connect() called, isConnecting:', isConnectingRef.current);
+    }
+
+    if (isConnectingRef.current) {
+      if (BRIDGE_ENABLE_LOGS) {
+        console.log('[Bridge] Already connecting, skipping...');
+      }
+      return;
+    }
 
     // Reset retry count if we've been waiting - don't block reconnection attempts
     // The SW restart retry path handles its own backoff
@@ -577,10 +607,16 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
     }
 
     try {
+      if (BRIDGE_ENABLE_LOGS) {
+        console.log('[Bridge] Attempting chrome.runtime.connect...');
+      }
       const port = chrome.runtime.connect({ name: CONFIG.PORT_NAME });
       const immediateError = consumeRuntimeError();
       if (immediateError) throw new Error(immediateError);
 
+      if (BRIDGE_ENABLE_LOGS) {
+        console.log('[Bridge] Port created successfully:', port.name);
+      }
       portRef.current = port;
 
       // Monitor for early connection errors
@@ -613,15 +649,15 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
 
       port.onDisconnect.addListener(() => {
         if (BRIDGE_ENABLE_LOGS) {
-          console.warn('[Bridge] Disconnected');
+          console.warn('[Bridge] *** onDisconnect FIRED ***');
         }
         isConnectingRef.current = false;
 
         const disconnectError = consumeRuntimeError();
 
-        // Log the error for debugging but don't treat it as fatal
-        if (disconnectError && BRIDGE_ENABLE_LOGS) {
-          console.warn('[Bridge] Disconnect error:', disconnectError);
+        if (BRIDGE_ENABLE_LOGS) {
+          console.warn('[Bridge] Disconnect error:', disconnectError || '(none)');
+          console.warn('[Bridge] isMounted:', isMountedRef.current);
         }
 
         updateStatus('disconnected');
@@ -631,9 +667,13 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         // Always use SW restart retry (infinite) since any disconnect could be SW stopping
         if (isMountedRef.current) {
           if (BRIDGE_ENABLE_LOGS) {
-            console.log('[Bridge] Will retry until service worker is available...');
+            console.log('[Bridge] Scheduling SW restart reconnect...');
           }
           scheduleSwRestartReconnect(connect);
+        } else {
+          if (BRIDGE_ENABLE_LOGS) {
+            console.log('[Bridge] Not mounted, NOT scheduling reconnect');
+          }
         }
       });
 
