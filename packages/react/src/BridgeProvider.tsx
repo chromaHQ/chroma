@@ -81,14 +81,14 @@ interface BridgeMessage {
 const CONFIG = {
   RETRY_AFTER: 1000,
   MAX_RETRIES: 10,
-  PING_INTERVAL: 2000, // Check every 2s for faster SW death detection
+  PING_INTERVAL: 3000, // Check every 3s (balance between responsiveness and false positives)
   MAX_RETRY_COOLDOWN: 30000,
   DEFAULT_TIMEOUT: 10000,
   MAX_RETRY_DELAY: 30000,
-  PING_TIMEOUT: 2000,
+  PING_TIMEOUT: 5000, // Give SW 5s to respond (handles busy periods)
   ERROR_CHECK_INTERVAL: 100,
   MAX_ERROR_CHECKS: 10,
-  CONSECUTIVE_FAILURE_THRESHOLD: 2,
+  CONSECUTIVE_FAILURE_THRESHOLD: 3, // Require 3 consecutive failures (9s total) before reconnecting
   RECONNECT_DELAY: 100,
   PORT_NAME: 'chroma-bridge',
   // Service worker restart retry settings (indefinite retries)
