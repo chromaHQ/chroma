@@ -523,12 +523,38 @@ export class BridgeStore<T> implements CentralStore<T> {
   };
 }
 
-// Factory function to create bridge store
+// Store instance cache - prevents multiple instances per store name (React Strict Mode fix)
+const storeCache = new Map<string, BridgeStore<any>>();
+
+// Factory function to create bridge store (with singleton pattern per store name)
 export function createBridgeStore<T>(
   bridge: BridgeWithEvents,
   initialState?: T,
   storeName = 'default',
   readyCallbacks: Set<() => void> = new Set(),
 ): CentralStore<T> {
-  return new BridgeStore<T>(bridge, initialState, storeName, readyCallbacks);
+  // Return cached instance if it exists (prevents duplicate subscriptions in React Strict Mode)
+  if (storeCache.has(storeName)) {
+    const cached = storeCache.get(storeName)!;
+    if (STORE_ENABLE_LOGS) {
+      console.log(`BridgeStore[${storeName}]: Returning cached instance (singleton)`);
+    }
+    // Add any new ready callbacks to the existing instance
+    readyCallbacks.forEach((cb) => cached.onReady(cb));
+    return cached as CentralStore<T>;
+  }
+
+  const store = new BridgeStore<T>(bridge, initialState, storeName, readyCallbacks);
+  storeCache.set(storeName, store);
+
+  if (STORE_ENABLE_LOGS) {
+    console.log(`BridgeStore[${storeName}]: Created new instance (cached)`);
+  }
+
+  return store;
+}
+
+// Helper to clear the store cache (useful for testing)
+export function clearStoreCache(): void {
+  storeCache.clear();
 }
