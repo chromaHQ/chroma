@@ -31,6 +31,12 @@ interface Bridge {
   off: (key: string, handler: (payload: unknown) => void) => void;
   isConnected: boolean;
   ping: () => Promise<boolean>;
+  /**
+   * Pause health checks for the specified duration.
+   * Use this before calling a message that triggers heavy/blocking operations in the SW.
+   * @param durationMs - How long to pause health checks in milliseconds
+   */
+  pauseHealthChecks: (durationMs: number) => void;
 }
 
 export interface BridgeContextValue {
@@ -57,17 +63,6 @@ interface BridgeProviderProps {
   onConnectionChange?: (status: ConnectionStatus) => void;
   /** Callback when an error occurs */
   onError?: (error: Error) => void;
-  /**
-   * Optional function to check if health checks should be paused.
-   * Return a timestamp (ms) until which health checks are paused, or null/0 if not paused.
-   * This allows service workers to pause health monitoring during heavy operations.
-   *
-   * @example
-   * ```tsx
-   * <BridgeProvider isHealthPaused={() => store.getState().healthPausedUntil}>
-   * ```
-   */
-  isHealthPausedUntil?: () => number | null | undefined;
 }
 
 interface PendingRequest {
@@ -157,6 +152,7 @@ interface BridgeFactoryDeps {
   isConnectedRef: MutableRefObject<boolean>;
   consecutiveTimeoutsRef: MutableRefObject<number>;
   reconnectionGracePeriodRef: MutableRefObject<boolean>;
+  healthPausedUntilRef: MutableRefObject<number>;
   defaultTimeout: number;
   onReconnectNeeded: () => void;
 }
@@ -170,6 +166,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
     isConnectedRef,
     consecutiveTimeoutsRef,
     reconnectionGracePeriodRef,
+    healthPausedUntilRef,
     defaultTimeout,
     onReconnectNeeded,
   } = deps;
@@ -318,6 +315,13 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
         return false;
       }
     },
+    pauseHealthChecks: (durationMs: number): void => {
+      const pauseUntil = Date.now() + durationMs;
+      healthPausedUntilRef.current = pauseUntil;
+      if (BRIDGE_ENABLE_LOGS) {
+        console.log(`[Bridge] Health checks paused for ${Math.round(durationMs / 1000)}s`);
+      }
+    },
   };
 
   return bridge;
@@ -331,11 +335,11 @@ interface HealthMonitorDeps {
   bridge: Bridge;
   pingIntervalRef: MutableRefObject<ReturnType<typeof setInterval> | null>;
   consecutivePingFailuresRef: MutableRefObject<number>;
+  healthPausedUntilRef: MutableRefObject<number>;
   pingInterval: number;
   setIsServiceWorkerAlive: (alive: boolean) => void;
   onReconnectNeeded: () => void;
   rejectAllPendingRequests: (message: string) => void;
-  isHealthPausedUntil?: () => number | null | undefined;
 }
 
 function startHealthMonitor(deps: HealthMonitorDeps): void {
@@ -343,11 +347,11 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
     bridge,
     pingIntervalRef,
     consecutivePingFailuresRef,
+    healthPausedUntilRef,
     pingInterval,
     setIsServiceWorkerAlive,
     onReconnectNeeded,
     rejectAllPendingRequests,
-    isHealthPausedUntil,
   } = deps;
 
   clearIntervalSafe(pingIntervalRef);
@@ -365,8 +369,8 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
       return;
     }
 
-    // Check if health checks are paused via store state (with expiration)
-    const pausedUntil = isHealthPausedUntil?.() ?? 0;
+    // Check if health checks are paused (set via health:pause broadcast)
+    const pausedUntil = healthPausedUntilRef.current;
     if (pausedUntil && Date.now() < pausedUntil) {
       if (BRIDGE_ENABLE_LOGS) {
         const remainingMs = pausedUntil - Date.now();
@@ -384,8 +388,8 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
     // Check if interval was cleared during async ping
     if (!pingIntervalRef.current) return;
 
-    // Re-check pause state after async ping (state may have changed)
-    const pausedUntilAfterPing = isHealthPausedUntil?.() ?? 0;
+    // Re-check pause state after async ping (state may have changed via broadcast)
+    const pausedUntilAfterPing = healthPausedUntilRef.current;
     if (pausedUntilAfterPing && Date.now() < pausedUntilAfterPing) {
       consecutivePingFailuresRef.current = 0;
       return;
@@ -430,7 +434,6 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   defaultTimeout = CONFIG.DEFAULT_TIMEOUT,
   onConnectionChange,
   onError,
-  isHealthPausedUntil,
 }) => {
   // State
   const [bridge, setBridge] = useState<Bridge | null>(null);
@@ -455,6 +458,10 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   const errorCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const consecutivePingFailuresRef = useRef(0);
   const consecutiveTimeoutsRef = useRef(0);
+
+  // Health pause ref - can be set via broadcast or prop callback
+  // This tracks when health checks should be skipped (timestamp until paused)
+  const healthPausedUntilRef = useRef<number>(0);
 
   // Grace period after reconnection - ignore timeouts while SW is starting up
   const reconnectionGracePeriodRef = useRef(false);
@@ -779,6 +786,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         isConnectedRef,
         consecutiveTimeoutsRef,
         reconnectionGracePeriodRef,
+        healthPausedUntilRef,
         defaultTimeout,
         onReconnectNeeded: triggerReconnect,
       });
@@ -831,11 +839,11 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         bridge: bridgeInstance,
         pingIntervalRef,
         consecutivePingFailuresRef,
+        healthPausedUntilRef,
         pingInterval,
         setIsServiceWorkerAlive,
         onReconnectNeeded: triggerReconnect,
         rejectAllPendingRequests,
-        isHealthPausedUntil,
       });
     } catch (e) {
       isConnectingRef.current = false;
@@ -852,7 +860,6 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
     defaultTimeout,
     updateStatus,
     pingInterval,
-    isHealthPausedUntil,
   ]);
 
   // Manual reconnect
