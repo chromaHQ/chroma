@@ -320,6 +320,7 @@ interface HealthMonitorDeps {
   bridge: Bridge;
   pingIntervalRef: MutableRefObject<ReturnType<typeof setInterval> | null>;
   consecutivePingFailuresRef: MutableRefObject<number>;
+  healthPausedRef: MutableRefObject<boolean>;
   pingInterval: number;
   setIsServiceWorkerAlive: (alive: boolean) => void;
   onReconnectNeeded: () => void;
@@ -331,6 +332,7 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
     bridge,
     pingIntervalRef,
     consecutivePingFailuresRef,
+    healthPausedRef,
     pingInterval,
     setIsServiceWorkerAlive,
     onReconnectNeeded,
@@ -352,10 +354,21 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
       return;
     }
 
+    // Skip health checks while paused (during heavy crypto operations)
+    if (healthPausedRef.current) {
+      if (BRIDGE_ENABLE_LOGS) {
+        console.log('[Bridge] Health check skipped - paused for heavy operation');
+      }
+      return;
+    }
+
     const alive = await bridge.ping();
 
     // Check if interval was cleared during async ping
     if (!pingIntervalRef.current) return;
+
+    // Don't update health status if we became paused during the ping
+    if (healthPausedRef.current) return;
 
     setIsServiceWorkerAlive(alive);
 
@@ -420,6 +433,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   const errorCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const consecutivePingFailuresRef = useRef(0);
   const consecutiveTimeoutsRef = useRef(0);
+  const healthPausedRef = useRef(false);
 
   // Grace period after reconnection - ignore timeouts while SW is starting up
   const reconnectionGracePeriodRef = useRef(false);
@@ -791,11 +805,29 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         consecutiveTimeoutsRef.current = 0; // Reset so we don't double-trigger reconnection
       };
 
+      // Listen for health pause/resume broadcasts from service worker
+      bridgeInstance.on('health:pause', () => {
+        if (BRIDGE_ENABLE_LOGS) {
+          console.log('[Bridge] Health checks paused (heavy operation in progress)');
+        }
+        healthPausedRef.current = true;
+        consecutivePingFailuresRef.current = 0; // Reset failures when pausing
+      });
+
+      bridgeInstance.on('health:resume', () => {
+        if (BRIDGE_ENABLE_LOGS) {
+          console.log('[Bridge] Health checks resumed');
+        }
+        healthPausedRef.current = false;
+        consecutivePingFailuresRef.current = 0; // Reset failures when resuming
+      });
+
       // Start health monitoring
       startHealthMonitor({
         bridge: bridgeInstance,
         pingIntervalRef,
         consecutivePingFailuresRef,
+        healthPausedRef,
         pingInterval,
         setIsServiceWorkerAlive,
         onReconnectNeeded: triggerReconnect,

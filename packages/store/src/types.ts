@@ -40,4 +40,19 @@ export interface CentralStore<T> extends StoreApi<T> {
   isReady: () => boolean;
   onReady: (callback: () => void) => () => void;
   reset: () => void;
+  getBridge: () => BridgeRuntime | null;
+}
+
+/**
+ * Bridge runtime interface for health check control
+ */
+export interface BridgeRuntime {
+  /** Broadcast a message to all connected UI clients */
+  broadcast: (key: string, payload?: unknown) => void;
+  /** Pause health checks before heavy/blocking operations */
+  pauseHealthChecks: () => void;
+  /** Resume health checks after heavy/blocking operations */
+  resumeHealthChecks: () => void;
+  /** Execute a function with health checks paused */
+  withPausedHealthChecks: <T>(fn: () => Promise<T>) => Promise<T>;
 }

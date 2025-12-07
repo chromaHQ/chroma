@@ -380,7 +380,7 @@ class BridgeRuntimeManager {
   /**
    * Broadcast message to all connected UI ports from service worker
    */
-  public broadcast(key: string, payload: unknown): void {
+  public broadcast(key: string, payload?: unknown): void {
     const message: BroadcastMessage = {
       type: 'broadcast',
       key,
@@ -449,6 +449,47 @@ class BridgeRuntimeManager {
       portName: this.portName,
       initialized: this.isInitialized,
     };
+  }
+
+  /**
+   * Pause health checks on connected clients.
+   * Call this before starting heavy/blocking operations (e.g., Argon2, Scrypt)
+   * to prevent ping timeouts from triggering reconnection.
+   */
+  public pauseHealthChecks(): void {
+    this.logger.info('⏸️ Pausing health checks for heavy operation');
+    this.broadcast('health:pause');
+  }
+
+  /**
+   * Resume health checks on connected clients.
+   * Call this after heavy/blocking operations complete.
+   */
+  public resumeHealthChecks(): void {
+    this.logger.info('▶️ Resuming health checks');
+    this.broadcast('health:resume');
+  }
+
+  /**
+   * Execute a function with health checks paused.
+   * Automatically pauses before and resumes after the operation,
+   * even if an error is thrown.
+   *
+   * @example
+   * ```ts
+   * const result = await bridge.withPausedHealthChecks(async () => {
+   *   // Heavy crypto operation that blocks for 15+ seconds
+   *   return await expensiveArgon2Operation();
+   * });
+   * ```
+   */
+  public async withPausedHealthChecks<T>(fn: () => Promise<T>): Promise<T> {
+    this.pauseHealthChecks();
+    try {
+      return await fn();
+    } finally {
+      this.resumeHealthChecks();
+    }
   }
 
   /**
