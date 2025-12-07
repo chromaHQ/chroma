@@ -541,7 +541,7 @@ export function createBridgeStore<T>(
     }
     // Add any new ready callbacks to the existing instance
     readyCallbacks.forEach((cb) => cached.onReady(cb));
-    return cached as CentralStore<T>;
+    return cached as unknown as CentralStore<T>;
   }
 
   const store = new BridgeStore<T>(bridge, initialState, storeName, readyCallbacks);

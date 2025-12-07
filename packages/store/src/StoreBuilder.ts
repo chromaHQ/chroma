@@ -133,7 +133,6 @@ export class StoreBuilder<T = any> {
       setBridge: (bridge: any) => {
         runtimeBridge = bridge;
       },
-      getBridge: () => runtimeBridge,
       onReady: (callback: () => void) => {
         if (isReady) {
           callback();

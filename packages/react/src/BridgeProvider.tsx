@@ -57,6 +57,17 @@ interface BridgeProviderProps {
   onConnectionChange?: (status: ConnectionStatus) => void;
   /** Callback when an error occurs */
   onError?: (error: Error) => void;
+  /**
+   * Optional function to check if health checks should be paused.
+   * Return a timestamp (ms) until which health checks are paused, or null/0 if not paused.
+   * This allows service workers to pause health monitoring during heavy operations.
+   *
+   * @example
+   * ```tsx
+   * <BridgeProvider isHealthPaused={() => store.getState().healthPausedUntil}>
+   * ```
+   */
+  isHealthPausedUntil?: () => number | null | undefined;
 }
 
 interface PendingRequest {
@@ -320,11 +331,11 @@ interface HealthMonitorDeps {
   bridge: Bridge;
   pingIntervalRef: MutableRefObject<ReturnType<typeof setInterval> | null>;
   consecutivePingFailuresRef: MutableRefObject<number>;
-  healthPausedRef: MutableRefObject<boolean>;
   pingInterval: number;
   setIsServiceWorkerAlive: (alive: boolean) => void;
   onReconnectNeeded: () => void;
   rejectAllPendingRequests: (message: string) => void;
+  isHealthPausedUntil?: () => number | null | undefined;
 }
 
 function startHealthMonitor(deps: HealthMonitorDeps): void {
@@ -332,11 +343,11 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
     bridge,
     pingIntervalRef,
     consecutivePingFailuresRef,
-    healthPausedRef,
     pingInterval,
     setIsServiceWorkerAlive,
     onReconnectNeeded,
     rejectAllPendingRequests,
+    isHealthPausedUntil,
   } = deps;
 
   clearIntervalSafe(pingIntervalRef);
@@ -354,11 +365,15 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
       return;
     }
 
-    // Skip health checks while paused (during heavy crypto operations)
-    if (healthPausedRef.current) {
+    // Check if health checks are paused via store state (with expiration)
+    const pausedUntil = isHealthPausedUntil?.() ?? 0;
+    if (pausedUntil && Date.now() < pausedUntil) {
       if (BRIDGE_ENABLE_LOGS) {
-        console.log('[Bridge] Health check skipped - paused for heavy operation');
+        const remainingMs = pausedUntil - Date.now();
+        console.log(`[Bridge] Health check skipped - paused for ${Math.round(remainingMs / 1000)}s more`);
       }
+      // Reset failure counter while paused to prevent immediate reconnect when resuming
+      consecutivePingFailuresRef.current = 0;
       return;
     }
 
@@ -367,8 +382,12 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
     // Check if interval was cleared during async ping
     if (!pingIntervalRef.current) return;
 
-    // Don't update health status if we became paused during the ping
-    if (healthPausedRef.current) return;
+    // Re-check pause state after async ping (state may have changed)
+    const pausedUntilAfterPing = isHealthPausedUntil?.() ?? 0;
+    if (pausedUntilAfterPing && Date.now() < pausedUntilAfterPing) {
+      consecutivePingFailuresRef.current = 0;
+      return;
+    }
 
     setIsServiceWorkerAlive(alive);
 
@@ -409,6 +428,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   defaultTimeout = CONFIG.DEFAULT_TIMEOUT,
   onConnectionChange,
   onError,
+  isHealthPausedUntil,
 }) => {
   // State
   const [bridge, setBridge] = useState<Bridge | null>(null);
@@ -433,7 +453,6 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   const errorCheckIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const consecutivePingFailuresRef = useRef(0);
   const consecutiveTimeoutsRef = useRef(0);
-  const healthPausedRef = useRef(false);
 
   // Grace period after reconnection - ignore timeouts while SW is starting up
   const reconnectionGracePeriodRef = useRef(false);
@@ -805,33 +824,16 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         consecutiveTimeoutsRef.current = 0; // Reset so we don't double-trigger reconnection
       };
 
-      // Listen for health pause/resume broadcasts from service worker
-      bridgeInstance.on('health:pause', () => {
-        if (BRIDGE_ENABLE_LOGS) {
-          console.log('[Bridge] Health checks paused (heavy operation in progress)');
-        }
-        healthPausedRef.current = true;
-        consecutivePingFailuresRef.current = 0; // Reset failures when pausing
-      });
-
-      bridgeInstance.on('health:resume', () => {
-        if (BRIDGE_ENABLE_LOGS) {
-          console.log('[Bridge] Health checks resumed');
-        }
-        healthPausedRef.current = false;
-        consecutivePingFailuresRef.current = 0; // Reset failures when resuming
-      });
-
       // Start health monitoring
       startHealthMonitor({
         bridge: bridgeInstance,
         pingIntervalRef,
         consecutivePingFailuresRef,
-        healthPausedRef,
         pingInterval,
         setIsServiceWorkerAlive,
         onReconnectNeeded: triggerReconnect,
         rejectAllPendingRequests,
+        isHealthPausedUntil,
       });
     } catch (e) {
       isConnectingRef.current = false;
@@ -848,6 +850,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
     defaultTimeout,
     updateStatus,
     pingInterval,
+    isHealthPausedUntil,
   ]);
 
   // Manual reconnect
