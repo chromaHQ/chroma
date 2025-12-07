@@ -828,6 +828,14 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
 
   // Lifecycle
   useEffect(() => {
+    // Guard against duplicate connections in React Strict Mode or hot reload
+    if (portRef.current || isConnectingRef.current) {
+      if (BRIDGE_ENABLE_LOGS) {
+        console.log('[Bridge] Lifecycle: Connection already exists, skipping connect()');
+      }
+      return;
+    }
+
     connect();
 
     const handleVisibilityChange = () => {
@@ -874,7 +882,8 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       clearTimeoutSafe(maxRetryCooldownRef);
       cleanup(false); // Don't emit disconnect on unmount - component is being destroyed
     };
-  }, [connect, cleanup]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run once on mount, ignore callback changes
 
   // Context value
   const contextValue = useMemo<BridgeContextValue>(
