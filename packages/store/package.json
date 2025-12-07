@@ -1,6 +1,6 @@
 {
   "name": "@chromahq/store",
-  "version": "1.0.31",
+  "version": "1.0.32",
   "description": "Centralized, persistent store for Chrome extensions using zustand, accessible from service workers and React, with chrome.storage.local persistence.",
   "type": "module",
   "main": "dist/index.cjs.js",
