@@ -370,7 +370,9 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
     if (pausedUntil && Date.now() < pausedUntil) {
       if (BRIDGE_ENABLE_LOGS) {
         const remainingMs = pausedUntil - Date.now();
-        console.log(`[Bridge] Health check skipped - paused for ${Math.round(remainingMs / 1000)}s more`);
+        console.log(
+          `[Bridge] Health check skipped - paused for ${Math.round(remainingMs / 1000)}s more`,
+        );
       }
       // Reset failure counter while paused to prevent immediate reconnect when resuming
       consecutivePingFailuresRef.current = 0;
