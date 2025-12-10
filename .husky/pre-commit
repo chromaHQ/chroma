@@ -1,1 +1,6 @@
+#!/usr/bin/env sh
+
+# Load pnpm and node paths for GUI apps (VS Code, etc.)
+export PATH="$HOME/Library/pnpm:$HOME/.nvm/versions/node/v22.18.0/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 pnpm lint-staged

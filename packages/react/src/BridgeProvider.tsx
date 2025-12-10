@@ -57,8 +57,15 @@ interface BridgeProviderProps {
   pingInterval?: number;
   /** How long to wait before resetting retry count in ms. Default: 30000 */
   maxRetryCooldown?: number;
-  /** Default timeout for messages in ms. Default: 10000 */
+  /** Default timeout for messages in ms. Default: 30000 */
   defaultTimeout?: number;
+  /**
+   * Timeout threshold for counting failures toward reconnection.
+   * Only requests with timeouts <= this value are counted as potential SW issues.
+   * Requests with longer timeouts (intentional slow operations) won't trigger reconnection.
+   * Default: 15000 (15s)
+   */
+  timeoutFailureThreshold?: number;
   /** Callback when connection status changes */
   onConnectionChange?: (status: ConnectionStatus) => void;
   /** Callback when an error occurs */
@@ -69,6 +76,7 @@ interface PendingRequest {
   resolve: (data: unknown) => void;
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
+  timeoutDuration: number; // The timeout duration for this request (used to distinguish slow operations)
 }
 
 interface BridgeMessage {
@@ -87,19 +95,21 @@ interface BridgeMessage {
 const CONFIG = {
   RETRY_AFTER: 1000,
   MAX_RETRIES: 10,
-  PING_INTERVAL: 3000, // Check every 3s (balance between responsiveness and false positives)
+  PING_INTERVAL: 5000, // Check every 5s (reduced frequency to avoid false positives during heavy operations)
   MAX_RETRY_COOLDOWN: 30000,
-  DEFAULT_TIMEOUT: 10000,
+  DEFAULT_TIMEOUT: 30000, // Increased from 20s to 30s for slow operations
   MAX_RETRY_DELAY: 30000,
-  PING_TIMEOUT: 5000, // Give SW 5s to respond (handles busy periods)
+  PING_TIMEOUT: 10000, // Give SW 10s to respond (handles busy periods like large storage reads)
   ERROR_CHECK_INTERVAL: 100,
   MAX_ERROR_CHECKS: 10,
-  CONSECUTIVE_FAILURE_THRESHOLD: 3, // Require 3 consecutive failures (9s total) before reconnecting
+  CONSECUTIVE_FAILURE_THRESHOLD: 5, // Require 5 consecutive failures (25s total) before reconnecting
   RECONNECT_DELAY: 100,
   PORT_NAME: 'chroma-bridge',
   // Service worker restart retry settings (indefinite retries)
   SW_RESTART_RETRY_DELAY: 500,
   SW_RESTART_MAX_DELAY: 5000,
+  // Threshold for counting timeouts toward reconnection (only count fast timeouts as failures)
+  TIMEOUT_FAILURE_THRESHOLD_MS: 15000, // Only count timeouts < 15s as potential SW issues
 } as const;
 
 // ============================================================================
@@ -154,6 +164,7 @@ interface BridgeFactoryDeps {
   reconnectionGracePeriodRef: MutableRefObject<boolean>;
   healthPausedUntilRef: MutableRefObject<number>;
   defaultTimeout: number;
+  timeoutFailureThreshold: number;
   onReconnectNeeded: () => void;
 }
 
@@ -168,15 +179,20 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
     reconnectionGracePeriodRef,
     healthPausedUntilRef,
     defaultTimeout,
+    timeoutFailureThreshold,
     onReconnectNeeded,
   } = deps;
 
   const rejectAllPending = (message: string) => {
-    pendingRequestsRef.current.forEach(({ reject, timeout }) => {
-      clearTimeout(timeout);
-      reject(new Error(message));
+    // Only reject requests with short timeouts (default requests)
+    // Long-timeout requests are intentional slow operations and should be allowed to complete
+    pendingRequestsRef.current.forEach(({ reject, timeout, timeoutDuration }, id) => {
+      if (timeoutDuration <= timeoutFailureThreshold) {
+        clearTimeout(timeout);
+        reject(new Error(message));
+        pendingRequestsRef.current.delete(id);
+      }
     });
-    pendingRequestsRef.current.clear();
   };
 
   const send = <Req, Res = unknown>(
@@ -197,20 +213,26 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
 
         pendingRequestsRef.current.delete(id);
 
-        // Don't count timeouts during grace period (SW still starting up)
-        if (!reconnectionGracePeriodRef.current) {
+        // Only count timeouts toward reconnection if:
+        // 1. Not during grace period (SW still starting up)
+        // 2. The timeout duration was short (long timeouts are likely intentional slow operations)
+        // This prevents false positive disconnections when users have slow storage or heavy operations
+        const isShortTimeout = timeoutDuration <= timeoutFailureThreshold;
+        if (!reconnectionGracePeriodRef.current && isShortTimeout) {
           consecutiveTimeoutsRef.current++;
         }
 
         if (BRIDGE_ENABLE_LOGS) {
           console.warn(
-            `[Bridge] Request timed out: ${key} (${timeoutDuration}ms)${reconnectionGracePeriodRef.current ? ' [grace period]' : ''}`,
+            `[Bridge] Request timed out: ${key} (${timeoutDuration}ms)${reconnectionGracePeriodRef.current ? ' [grace period]' : ''}${!isShortTimeout ? ' [long operation, not counted toward reconnect]' : ''}`,
           );
         }
 
         // Trigger reconnect on consecutive timeouts (but not during grace period)
+        // Only if we've had enough SHORT timeouts (indicating actual SW issues, not slow operations)
         if (
           !reconnectionGracePeriodRef.current &&
+          isShortTimeout &&
           consecutiveTimeoutsRef.current >= CONFIG.CONSECUTIVE_FAILURE_THRESHOLD
         ) {
           if (BRIDGE_ENABLE_LOGS) {
@@ -230,6 +252,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
         resolve: resolve as (data: unknown) => void,
         reject,
         timeout,
+        timeoutDuration,
       });
 
       try {
@@ -432,6 +455,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   pingInterval = CONFIG.PING_INTERVAL,
   maxRetryCooldown = CONFIG.MAX_RETRY_COOLDOWN,
   defaultTimeout = CONFIG.DEFAULT_TIMEOUT,
+  timeoutFailureThreshold = CONFIG.TIMEOUT_FAILURE_THRESHOLD_MS,
   onConnectionChange,
   onError,
 }) => {
@@ -547,7 +571,11 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       reject(new Error('Bridge disconnected'));
     });
     pendingRequestsRef.current.clear();
-    // NOTE: We do NOT clear eventListenersRef here - listeners should persist across reconnections
+    // NOTE: We do NOT clear eventListenersRef during reconnection - listeners should persist
+    // However, if emitDisconnect is false (unmount), we should clear listeners to prevent memory leaks
+    if (!emitDisconnect) {
+      eventListenersRef.current.clear();
+    }
 
     // Reset state
     setIsServiceWorkerAlive(false);
@@ -585,6 +613,12 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
           }
         }
       });
+      return;
+    }
+
+    // Log unhandled messages (response for already-timed-out request, or malformed message)
+    if (message.id && BRIDGE_ENABLE_LOGS) {
+      console.warn('[Bridge] Received response for unknown/expired request:', message.id);
     }
   }, []);
 
@@ -788,6 +822,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         reconnectionGracePeriodRef,
         healthPausedUntilRef,
         defaultTimeout,
+        timeoutFailureThreshold,
         onReconnectNeeded: triggerReconnect,
       });
 
@@ -824,13 +859,16 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         }
       });
 
-      // Helper to reject all pending requests (used by health monitor)
+      // Helper to reject pending requests with short timeouts (used by health monitor)
+      // Only rejects short-timeout requests - long-timeout requests are intentional slow operations
       const rejectAllPendingRequests = (message: string) => {
-        pendingRequestsRef.current.forEach(({ reject, timeout }) => {
-          clearTimeout(timeout);
-          reject(new Error(message));
+        pendingRequestsRef.current.forEach(({ reject, timeout, timeoutDuration }, id) => {
+          if (timeoutDuration <= timeoutFailureThreshold) {
+            clearTimeout(timeout);
+            reject(new Error(message));
+            pendingRequestsRef.current.delete(id);
+          }
         });
-        pendingRequestsRef.current.clear();
         consecutiveTimeoutsRef.current = 0; // Reset so we don't double-trigger reconnection
       };
 
@@ -903,19 +941,30 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         isConnectingRef.current = false; // Reset so connect() doesn't early-exit
         connect();
       } else if (currentStatus === 'connected' && currentBridge) {
-        currentBridge.ping().then((alive) => {
-          // Check mounted before acting on async result
-          if (!isMountedRef.current) return;
-          if (!alive) {
-            if (BRIDGE_ENABLE_LOGS) {
-              console.warn('[Bridge] Tab visible but unresponsive, reconnecting...');
+        // Double-check we're not already reconnecting before pinging
+        if (isConnectingRef.current) return;
+
+        currentBridge
+          .ping()
+          .then((alive) => {
+            // Check mounted AND not already connecting before acting on async result
+            if (!isMountedRef.current) return;
+            if (isConnectingRef.current) return; // Another reconnect started while we were pinging
+
+            if (!alive) {
+              if (BRIDGE_ENABLE_LOGS) {
+                console.warn('[Bridge] Tab visible but unresponsive, reconnecting...');
+              }
+              retryCountRef.current = 0;
+              swRestartRetryCountRef.current = 0;
+              isConnectingRef.current = false;
+              cleanup();
+              connect();
             }
-            retryCountRef.current = 0;
-            isConnectingRef.current = false;
-            cleanup();
-            connect();
-          }
-        });
+          })
+          .catch(() => {
+            // Ping failed (port disconnected, etc.) - ignore, onDisconnect will handle it
+          });
       }
     };
 
