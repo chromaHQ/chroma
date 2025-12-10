@@ -57,7 +57,9 @@ export class Scheduler {
     this.registry.clearTimers(id);
 
     const delayMs = when - now;
-    const adapter = delayMs < 60_000 ? this.timeout : this.alarm;
+    // Use AlarmAdapter for delays >= 30 seconds (Chrome Alarms minimum is ~0.5 minutes)
+    // This ensures jobs with second offsets like "50 */1 * * * *" still use Chrome Alarms
+    const adapter = delayMs < 30_000 ? this.timeout : this.alarm;
     const timerId = adapter.schedule(id, when);
 
     // Only store timeout ID if we got one (Chrome alarms return null)

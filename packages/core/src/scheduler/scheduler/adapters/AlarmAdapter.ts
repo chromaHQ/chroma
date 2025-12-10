@@ -27,6 +27,9 @@ export class AlarmAdapter {
     if (this.listenerRegistered) return;
 
     if (this.isChromeAlarmsAvailable()) {
+      // Clear any stale alarms from previous SW instances before registering listener
+      this.clearStaleAlarms();
+
       chrome.alarms.onAlarm.addListener(this.handleAlarm);
       this.listenerRegistered = true;
       console.log('[AlarmAdapter] ✅ Chrome Alarms API available and listener registered');
@@ -35,6 +38,25 @@ export class AlarmAdapter {
         '[AlarmAdapter] ⚠️ Chrome Alarms API not available - will use setTimeout fallback',
       );
     }
+  };
+
+  /**
+   * Clear any stale chroma alarms from previous SW instances
+   */
+  private clearStaleAlarms = (): void => {
+    if (!this.isChromeAlarmsAvailable()) return;
+
+    chrome.alarms.getAll((alarms) => {
+      const staleAlarms = alarms.filter((a) => a.name.startsWith(AlarmAdapter.ALARM_PREFIX));
+      if (staleAlarms.length > 0) {
+        console.log(
+          `[AlarmAdapter] 🧹 Clearing ${staleAlarms.length} stale alarms from previous session`,
+        );
+        staleAlarms.forEach((alarm) => {
+          chrome.alarms.clear(alarm.name);
+        });
+      }
+    });
   };
 
   /**
