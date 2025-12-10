@@ -1,13 +1,12 @@
 export class TimeoutAdapter {
   private callbacks = new Map<string, () => void>();
-
-  onTrigger(callback: (id: string) => void): void {
-    this.triggerCallback = callback;
-  }
-
   private triggerCallback?: (id: string) => void;
 
-  schedule(id: string, when: number): NodeJS.Timeout {
+  onTrigger = (callback: (id: string) => void): void => {
+    this.triggerCallback = callback;
+  };
+
+  schedule = (id: string, when: number): NodeJS.Timeout => {
     // Cancel any existing timer for this id to prevent leaks
     this.cancel(id);
 
@@ -20,30 +19,30 @@ export class TimeoutAdapter {
 
     this.callbacks.set(id, () => clearTimeout(timeoutId));
     return timeoutId;
-  }
+  };
 
-  cancel(id: string): void {
+  cancel = (id: string): void => {
     const callback = this.callbacks.get(id);
     if (callback) {
       callback();
       this.callbacks.delete(id);
     }
-  }
+  };
 
   /**
    * Get the number of active timers (for debugging/monitoring)
    */
-  size(): number {
+  size = (): number => {
     return this.callbacks.size;
-  }
+  };
 
   /**
    * Clear all timers (for shutdown)
    */
-  clear(): void {
+  clear = (): void => {
     for (const callback of this.callbacks.values()) {
       callback();
     }
     this.callbacks.clear();
-  }
+  };
 }

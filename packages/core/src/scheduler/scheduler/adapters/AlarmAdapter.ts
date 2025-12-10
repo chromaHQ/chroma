@@ -1,19 +1,93 @@
+/**
+ * Alarm Adapter for scheduling jobs using Chrome Alarms API
+ *
+ * Chrome Alarms API benefits for Service Workers:
+ * - Alarms survive SW termination and wake it up when they fire
+ * - Browser manages them independently of JS event loop
+ * - More reliable for periodic tasks than setTimeout/setInterval
+ *
+ * Limitations:
+ * - Minimum granularity is ~1 minute (delayInMinutes must be >= 0.5 in dev, >= 1 in prod)
+ * - Falls back to setTimeout if Chrome Alarms API is unavailable
+ */
 export class AlarmAdapter {
+  private static readonly ALARM_PREFIX = 'chroma_job_';
   private callbacks = new Map<string, () => void>();
-
-  onTrigger(callback: (id: string) => void): void {
-    this.triggerCallback = callback;
-  }
-
+  private listenerRegistered = false;
   private triggerCallback?: (id: string) => void;
 
-  schedule(id: string, when: number): NodeJS.Timeout {
+  constructor() {
+    this.initializeAlarmListener();
+  }
+
+  /**
+   * Initialize the Chrome Alarms listener (once)
+   */
+  private initializeAlarmListener = (): void => {
+    if (this.listenerRegistered) return;
+
+    if (this.isChromeAlarmsAvailable()) {
+      chrome.alarms.onAlarm.addListener(this.handleAlarm);
+      this.listenerRegistered = true;
+    }
+  };
+
+  /**
+   * Check if Chrome Alarms API is available
+   */
+  private isChromeAlarmsAvailable = (): boolean => {
+    return !!(
+      typeof chrome !== 'undefined' &&
+      chrome.alarms &&
+      typeof chrome.alarms.create === 'function' &&
+      typeof chrome.alarms.clear === 'function' &&
+      chrome.alarms.onAlarm?.addListener
+    );
+  };
+
+  /**
+   * Handle alarm trigger from Chrome
+   */
+  private handleAlarm = (alarm: chrome.alarms.Alarm): void => {
+    // Only handle our alarms (prefixed)
+    if (!alarm.name.startsWith(AlarmAdapter.ALARM_PREFIX)) {
+      return;
+    }
+
+    const jobId = alarm.name.slice(AlarmAdapter.ALARM_PREFIX.length);
+    this.callbacks.delete(jobId);
+    this.triggerCallback?.(jobId);
+  };
+
+  onTrigger = (callback: (id: string) => void): void => {
+    this.triggerCallback = callback;
+  };
+
+  schedule = (id: string, when: number): NodeJS.Timeout | null => {
     // Cancel any existing alarm for this id to prevent leaks
     this.cancel(id);
 
     const delay = Math.max(0, when - Date.now());
+    const delayInMinutes = delay / 60000;
 
-    // For alarms, we'll use setTimeout as well but could be extended for other mechanisms
+    // Use Chrome Alarms API if available and delay is at least 30 seconds
+    // Chrome requires minimum ~0.5 minutes in dev, 1 minute in production
+    if (this.isChromeAlarmsAvailable() && delayInMinutes >= 0.5) {
+      const alarmName = `${AlarmAdapter.ALARM_PREFIX}${id}`;
+
+      chrome.alarms.create(alarmName, {
+        when,
+      });
+
+      // Store a no-op callback just to track active alarms
+      this.callbacks.set(id, () => {
+        chrome.alarms.clear(alarmName);
+      });
+
+      return null; // No timeout ID for Chrome alarms
+    }
+
+    // Fall back to setTimeout for very short delays or if Chrome Alarms unavailable
     const timeoutId = setTimeout(() => {
       this.callbacks.delete(id);
       this.triggerCallback?.(id);
@@ -21,30 +95,73 @@ export class AlarmAdapter {
 
     this.callbacks.set(id, () => clearTimeout(timeoutId));
     return timeoutId;
-  }
+  };
 
-  cancel(id: string): void {
+  cancel = (id: string): void => {
     const callback = this.callbacks.get(id);
     if (callback) {
       callback();
       this.callbacks.delete(id);
     }
-  }
+
+    // Also try to clear Chrome alarm directly (in case callback wasn't set)
+    if (this.isChromeAlarmsAvailable()) {
+      const alarmName = `${AlarmAdapter.ALARM_PREFIX}${id}`;
+      chrome.alarms.clear(alarmName);
+    }
+  };
 
   /**
    * Get the number of active alarms (for debugging/monitoring)
    */
-  size(): number {
+  size = (): number => {
     return this.callbacks.size;
-  }
+  };
 
   /**
    * Clear all alarms (for shutdown)
    */
-  clear(): void {
-    for (const callback of this.callbacks.values()) {
+  clear = (): void => {
+    for (const [id, callback] of this.callbacks.entries()) {
       callback();
     }
     this.callbacks.clear();
-  }
+
+    // Clear all Chrome alarms with our prefix
+    if (this.isChromeAlarmsAvailable()) {
+      chrome.alarms.getAll((alarms) => {
+        for (const alarm of alarms) {
+          if (alarm.name.startsWith(AlarmAdapter.ALARM_PREFIX)) {
+            chrome.alarms.clear(alarm.name);
+          }
+        }
+      });
+    }
+  };
+
+  /**
+   * Get diagnostic info about active alarms
+   */
+  getDiagnostics = async (): Promise<{
+    trackedAlarms: number;
+    chromeAlarms: chrome.alarms.Alarm[];
+    usingChromeApi: boolean;
+  }> => {
+    const chromeAlarms: chrome.alarms.Alarm[] = [];
+
+    if (this.isChromeAlarmsAvailable()) {
+      await new Promise<void>((resolve) => {
+        chrome.alarms.getAll((alarms) => {
+          chromeAlarms.push(...alarms.filter((a) => a.name.startsWith(AlarmAdapter.ALARM_PREFIX)));
+          resolve();
+        });
+      });
+    }
+
+    return {
+      trackedAlarms: this.callbacks.size,
+      chromeAlarms,
+      usingChromeApi: this.isChromeAlarmsAvailable(),
+    };
+  };
 }
