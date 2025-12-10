@@ -2,6 +2,24 @@ import type { Container } from '@inversifyjs/container';
 import { MiddlewareFn, MiddlewareRegistry } from '../internal/MiddlewareRegistry';
 import { DEFAULT_PORT_NAME } from '../internal/constants';
 
+const DIRECT_MESSAGE_FLAG = '__CHROMA_BRIDGE_DIRECT_MESSAGE__' as const;
+
+interface BridgeRuntimeDiagnosticsInternal {
+  keepAliveIntervalPings: number;
+  lastKeepAliveIntervalAt?: number;
+  alarmPings: number;
+  lastAlarmPingAt?: number;
+  portDisconnects: number;
+  lastPortDisconnectAt?: number;
+  lastPortDisconnectError?: string;
+  directMessageRequests: number;
+  directMessageErrors: number;
+}
+
+interface BridgeRuntimeDiagnostics extends BridgeRuntimeDiagnosticsInternal {
+  connectedPorts: number;
+}
+
 /**
  * Configuration options for the Bridge Runtime
  */
@@ -21,6 +39,7 @@ interface BridgeRequest {
   readonly key: string;
   readonly payload: unknown;
   readonly metadata?: Record<string, any>;
+  readonly [DIRECT_MESSAGE_FLAG]?: true;
 }
 
 /**
@@ -92,8 +111,18 @@ class BridgeRuntimeManager {
   private readonly keepAlive: boolean;
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   private static readonly KEEP_ALIVE_INTERVAL_MS = 25000;
+  private static readonly KEEP_ALIVE_ALARM_NAME = 'chroma-bridge-keep-alive';
+  private static readonly KEEP_ALIVE_ALARM_PERIOD_MINUTES = 1;
   private isInitialized = false;
   private connectedPorts = new Set<chrome.runtime.Port>();
+  private keepAliveAlarmRegistered = false;
+  private readonly diagnostics: BridgeRuntimeDiagnosticsInternal = {
+    keepAliveIntervalPings: 0,
+    alarmPings: 0,
+    portDisconnects: 0,
+    directMessageRequests: 0,
+    directMessageErrors: 0,
+  };
 
   constructor(options: BridgeRuntimeOptions) {
     this.container = options.container;
@@ -114,6 +143,8 @@ class BridgeRuntimeManager {
     }
 
     this.setupPortListener();
+    this.setupDirectMessageListener();
+    this.initializeKeepAliveAlarm();
 
     // Note: keep-alive is started dynamically when first port connects
     // and stopped when all ports disconnect (see setupMessageHandler)
@@ -147,6 +178,94 @@ class BridgeRuntimeManager {
         }
       }
     });
+  }
+
+  private setupDirectMessageListener(): void {
+    if (!chrome?.runtime?.onMessage?.addListener) {
+      this.logger.warn('Chrome runtime messaging unavailable; skipping direct message listener');
+      return;
+    }
+
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (!this.isDirectBridgeMessage(message)) {
+        return false;
+      }
+
+      const request = message as BridgeRequest;
+      this.logger.debug('📮 Direct bridge message received:', {
+        key: request.key,
+        hasPayload: !!request.payload,
+      });
+
+      this.diagnostics.directMessageRequests++;
+
+      const context = this.createPipelineContext(request);
+      this.processMessage(context)
+        .then((response) => {
+          sendResponse(response);
+        })
+        .catch(async (error) => {
+          this.diagnostics.directMessageErrors++;
+          const errResponse = await this.handleError(error as Error, context);
+          sendResponse(errResponse);
+        });
+
+      return true;
+    });
+  }
+
+  private isDirectBridgeMessage(message: unknown): message is BridgeRequest {
+    if (!message || typeof message !== 'object') {
+      return false;
+    }
+    return (message as BridgeRequest)[DIRECT_MESSAGE_FLAG] === true;
+  }
+
+  private initializeKeepAliveAlarm(): void {
+    if (!this.keepAlive || this.keepAliveAlarmRegistered) {
+      return;
+    }
+
+    if (!chrome?.alarms?.create || !chrome.alarms.onAlarm?.addListener) {
+      this.logger.warn('Chrome alarms API unavailable; keep-alive alarm disabled');
+      return;
+    }
+
+    chrome.alarms.create(BridgeRuntimeManager.KEEP_ALIVE_ALARM_NAME, {
+      periodInMinutes: BridgeRuntimeManager.KEEP_ALIVE_ALARM_PERIOD_MINUTES,
+    });
+
+    chrome.alarms.onAlarm.addListener(this.handleKeepAliveAlarm);
+    this.keepAliveAlarmRegistered = true;
+    this.logger.info('Registered keep-alive alarm for background wakeups');
+  }
+
+  private handleKeepAliveAlarm = (alarm: chrome.alarms.Alarm): void => {
+    if (alarm.name !== BridgeRuntimeManager.KEEP_ALIVE_ALARM_NAME) {
+      return;
+    }
+
+    chrome.runtime.getPlatformInfo(() => {
+      this.recordKeepAlivePing('alarm');
+
+      if (chrome.runtime.lastError) {
+        this.logger.warn(
+          `Chrome runtime error during keep-alive alarm: ${chrome.runtime.lastError.message}`,
+        );
+        chrome.runtime.lastError;
+      }
+    });
+  };
+
+  private recordKeepAlivePing(source: 'interval' | 'alarm'): void {
+    const timestamp = Date.now();
+    if (source === 'interval') {
+      this.diagnostics.keepAliveIntervalPings++;
+      this.diagnostics.lastKeepAliveIntervalAt = timestamp;
+    } else {
+      this.diagnostics.alarmPings++;
+      this.diagnostics.lastAlarmPingAt = timestamp;
+    }
   }
 
   /**
@@ -224,12 +343,18 @@ class BridgeRuntimeManager {
       // Remove from connected ports
       this.connectedPorts.delete(port);
 
-      if (chrome.runtime.lastError) {
-        this.logger.warn(`📴 Port disconnected with error: ${chrome.runtime.lastError.message}`);
-        chrome.runtime.lastError;
+      const runtimeErrorMessage = chrome.runtime.lastError?.message;
+
+      if (runtimeErrorMessage) {
+        this.logger.warn(`📴 Port disconnected with error: ${runtimeErrorMessage}`);
+        void chrome.runtime.lastError;
+        this.diagnostics.lastPortDisconnectError = runtimeErrorMessage;
       } else {
         this.logger.info(`📴 Port disconnected: ${port.name}`);
       }
+
+      this.diagnostics.portDisconnects++;
+      this.diagnostics.lastPortDisconnectAt = Date.now();
 
       // Stop keep-alive if no more connected ports (allow SW to sleep)
       if (this.keepAlive && this.connectedPorts.size === 0) {
@@ -260,6 +385,14 @@ class BridgeRuntimeManager {
       return {
         id: request.id,
         data: { pong: true, timestamp: Date.now() },
+        timestamp: Date.now(),
+      };
+    }
+
+    if (request.key === '__bridge_diagnostics__') {
+      return {
+        id: request.id,
+        data: this.getDiagnosticsSnapshot(),
         timestamp: Date.now(),
       };
     }
@@ -377,6 +510,13 @@ class BridgeRuntimeManager {
     });
   }
 
+  private getDiagnosticsSnapshot(): BridgeRuntimeDiagnostics {
+    return {
+      ...this.diagnostics,
+      connectedPorts: this.connectedPorts.size,
+    };
+  }
+
   /**
    * Broadcast message to all connected UI ports from service worker
    */
@@ -459,7 +599,13 @@ class BridgeRuntimeManager {
     this.logger.info('Starting keep-alive timer to keep service worker alive');
     this.keepAliveTimer = setInterval(() => {
       chrome.runtime.getPlatformInfo(() => {
-        // No-op, just to keep the worker alive
+        this.recordKeepAlivePing('interval');
+        if (chrome.runtime.lastError) {
+          this.logger.warn(
+            `Chrome runtime error during keep-alive ping: ${chrome.runtime.lastError.message}`,
+          );
+          chrome.runtime.lastError;
+        }
       });
     }, BridgeRuntimeManager.KEEP_ALIVE_INTERVAL_MS);
   }

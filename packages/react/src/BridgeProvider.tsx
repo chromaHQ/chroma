@@ -13,6 +13,101 @@ import {
 // Global bridge logging toggle; wired to Bootstrap.enableLogs at runtime
 // Consumers can set `window.__CHROMA_ENABLE_LOGS__ = false` to silence logs
 const BRIDGE_ENABLE_LOGS: boolean = true;
+const DIRECT_MESSAGE_FLAG = '__CHROMA_BRIDGE_DIRECT_MESSAGE__';
+
+interface BridgeDiagnosticsSnapshot {
+  lastUpdatedAt: number;
+  portDisconnects: number;
+  lastDisconnectError?: string;
+  lastDisconnectAt?: number;
+  sendMessageFallbacks: number;
+  lastFallbackReason?: string;
+  lastFallbackAt?: number;
+  sendMessageFallbackErrors: number;
+  lastFallbackError?: string;
+  pingFailures: number;
+  lastPingFailureAt?: number;
+}
+
+interface BridgeDiagnosticsApi {
+  get: () => BridgeDiagnosticsSnapshot;
+  reset: () => void;
+}
+
+declare global {
+  interface Window {
+    __CHROMA_BRIDGE_DIAGNOSTICS__?: BridgeDiagnosticsApi;
+  }
+}
+
+const createInitialDiagnosticsState = (): BridgeDiagnosticsSnapshot => ({
+  lastUpdatedAt: Date.now(),
+  portDisconnects: 0,
+  lastDisconnectError: undefined,
+  lastDisconnectAt: undefined,
+  sendMessageFallbacks: 0,
+  lastFallbackReason: undefined,
+  lastFallbackAt: undefined,
+  sendMessageFallbackErrors: 0,
+  lastFallbackError: undefined,
+  pingFailures: 0,
+  lastPingFailureAt: undefined,
+});
+
+const bridgeDiagnosticsState: BridgeDiagnosticsSnapshot = createInitialDiagnosticsState();
+
+const updateDiagnosticsState = (mutator: (state: BridgeDiagnosticsSnapshot) => void): void => {
+  mutator(bridgeDiagnosticsState);
+  bridgeDiagnosticsState.lastUpdatedAt = Date.now();
+};
+
+const resetDiagnosticsState = (): void => {
+  Object.assign(bridgeDiagnosticsState, createInitialDiagnosticsState());
+};
+
+const attachDiagnosticsApi = (): void => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  window.__CHROMA_BRIDGE_DIAGNOSTICS__ = {
+    get: () => ({ ...bridgeDiagnosticsState }),
+    reset: () => {
+      resetDiagnosticsState();
+    },
+  };
+};
+
+attachDiagnosticsApi();
+
+const recordDiagnostics = {
+  portDisconnect: (error?: string) => {
+    updateDiagnosticsState((state) => {
+      state.portDisconnects += 1;
+      state.lastDisconnectError = error;
+      state.lastDisconnectAt = Date.now();
+    });
+  },
+  fallbackSent: (reason: string) => {
+    updateDiagnosticsState((state) => {
+      state.sendMessageFallbacks += 1;
+      state.lastFallbackReason = reason;
+      state.lastFallbackAt = Date.now();
+    });
+  },
+  fallbackError: (error: string) => {
+    updateDiagnosticsState((state) => {
+      state.sendMessageFallbackErrors += 1;
+      state.lastFallbackError = error;
+    });
+  },
+  pingFailure: () => {
+    updateDiagnosticsState((state) => {
+      state.pingFailures += 1;
+      state.lastPingFailureAt = Date.now();
+    });
+  },
+};
 
 // ============================================================================
 // Types
@@ -202,12 +297,81 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
     timeoutDuration: number = defaultTimeout,
   ): Promise<Res> => {
     return new Promise((resolve, reject) => {
-      if (!portRef.current) {
-        reject(new Error('Bridge disconnected'));
-        return;
-      }
-
       const id = `msg_${++messageIdRef.current}`;
+
+      const finalizePendingWithError = (error: Error | string) => {
+        const pending = pendingRequestsRef.current.get(id);
+        if (!pending) return;
+        clearTimeout(pending.timeout);
+        pendingRequestsRef.current.delete(id);
+        pending.reject(error instanceof Error ? error : new Error(error));
+      };
+
+      const triggerRuntimeFallback = (reason: string) => {
+        if (BRIDGE_ENABLE_LOGS) {
+          console.warn(`[Bridge] Falling back to runtime.sendMessage (${reason})`);
+        }
+
+        recordDiagnostics.fallbackSent(reason);
+        onReconnectNeeded();
+
+        if (!chrome?.runtime?.sendMessage) {
+          const message = 'chrome.runtime.sendMessage not available';
+          recordDiagnostics.fallbackError(message);
+          finalizePendingWithError(message);
+          return;
+        }
+
+        try {
+          chrome.runtime.sendMessage(
+            {
+              id,
+              key,
+              payload,
+              metadata: { transport: 'direct', fallbackReason: reason },
+              [DIRECT_MESSAGE_FLAG]: true,
+            },
+            (response: BridgeMessage | undefined) => {
+              const runtimeError = consumeRuntimeError();
+              const pending = pendingRequestsRef.current.get(id);
+              if (!pending) return;
+
+              if (runtimeError) {
+                recordDiagnostics.fallbackError(runtimeError);
+                clearTimeout(pending.timeout);
+                pendingRequestsRef.current.delete(id);
+                pending.reject(new Error(runtimeError));
+                return;
+              }
+
+              if (!response) {
+                const message = 'No response from service worker';
+                recordDiagnostics.fallbackError(message);
+                clearTimeout(pending.timeout);
+                pendingRequestsRef.current.delete(id);
+                pending.reject(new Error(message));
+                return;
+              }
+
+              clearTimeout(pending.timeout);
+              pendingRequestsRef.current.delete(id);
+              consecutiveTimeoutsRef.current = 0;
+
+              if (response.error) {
+                recordDiagnostics.fallbackError(response.error);
+                pending.reject(new Error(response.error));
+              } else {
+                pending.resolve(response.data);
+              }
+            },
+          );
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : 'chrome.runtime.sendMessage failed';
+          recordDiagnostics.fallbackError(message);
+          finalizePendingWithError(error instanceof Error ? error : new Error(message));
+        }
+      };
 
       const timeout = setTimeout(() => {
         if (!pendingRequestsRef.current.has(id)) return;
@@ -256,6 +420,11 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
         timeoutDuration,
       });
 
+      if (!portRef.current) {
+        triggerRuntimeFallback('port-unavailable');
+        return;
+      }
+
       try {
         portRef.current.postMessage({ id, key, payload });
 
@@ -263,12 +432,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
         setTimeout(() => {
           const errorMessage = consumeRuntimeError();
           if (errorMessage && pendingRequestsRef.current.has(id)) {
-            const pending = pendingRequestsRef.current.get(id);
-            if (pending) {
-              clearTimeout(pending.timeout);
-              pendingRequestsRef.current.delete(id);
-              reject(new Error(errorMessage));
-            }
+            finalizePendingWithError(errorMessage);
           }
         }, 0);
 
@@ -278,12 +442,10 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
           throw new Error(immediateError);
         }
       } catch (e) {
-        const pending = pendingRequestsRef.current.get(id);
-        if (pending) {
-          clearTimeout(pending.timeout);
-          pendingRequestsRef.current.delete(id);
+        if (BRIDGE_ENABLE_LOGS) {
+          console.warn('[Bridge] Port send failed, attempting fallback', e);
         }
-        reject(e instanceof Error ? e : new Error('Send failed'));
+        triggerRuntimeFallback('port-postmessage-error');
       }
     });
   };
@@ -425,6 +587,8 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
       consecutivePingFailuresRef.current = 0;
       return;
     }
+
+    recordDiagnostics.pingFailure();
 
     consecutivePingFailuresRef.current++;
     if (BRIDGE_ENABLE_LOGS) {
@@ -774,6 +938,8 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         isConnectingRef.current = false;
 
         const disconnectError = consumeRuntimeError();
+
+        recordDiagnostics.portDisconnect(disconnectError);
 
         if (BRIDGE_ENABLE_LOGS) {
           console.warn('[Bridge] Disconnect error:', disconnectError || '(none)');
