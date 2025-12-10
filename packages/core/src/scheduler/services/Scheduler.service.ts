@@ -133,6 +133,14 @@ export class Scheduler {
     } catch (error) {
       this.logger.error(`Job ${id} execution failed:`, error as Error);
       context.fail(error as Error);
+
+      // Still reschedule recurring jobs even after failure
+      const options = this.registry.meta(id);
+      if (options?.cron || options?.recurring) {
+        this.logger.info(`Rescheduling failed recurring job ${id}`);
+        this.registry.updateState(id, JobState.SCHEDULED);
+        this.schedule(id, options);
+      }
     }
   }
 
@@ -155,5 +163,27 @@ export class Scheduler {
 
   listJobs(): Array<{ id: string; state: JobState; options: JobOptions }> {
     return this.registry.listAll();
+  }
+
+  /**
+   * Gracefully shutdown the scheduler, clearing all timers
+   */
+  shutdown(): void {
+    this.logger.info('Shutting down scheduler...');
+    this.alarm.clear();
+    this.timeout.clear();
+    this.registry.clear();
+    this.logger.info('Scheduler shutdown complete');
+  }
+
+  /**
+   * Get scheduler stats for monitoring
+   */
+  getStats(): { jobs: number; timeouts: number; alarms: number } {
+    return {
+      jobs: this.registry.size(),
+      timeouts: this.timeout.size(),
+      alarms: this.alarm.size(),
+    };
   }
 }

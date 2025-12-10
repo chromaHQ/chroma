@@ -11,8 +11,45 @@ interface JobEntry {
 }
 
 export class JobRegistry {
-  static instance = new JobRegistry();
+  private static _instance: JobRegistry;
   private jobs = new Map<string, JobEntry>();
+
+  static get instance(): JobRegistry {
+    if (!JobRegistry._instance) {
+      JobRegistry._instance = new JobRegistry();
+    }
+    return JobRegistry._instance;
+  }
+
+  /**
+   * Remove a job from the registry (for cleanup after permanent stop)
+   */
+  remove(id: string): boolean {
+    const entry = this.jobs.get(id);
+    if (entry) {
+      this.clearTimers(id);
+      this.jobs.delete(id);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Get the number of registered jobs
+   */
+  size(): number {
+    return this.jobs.size;
+  }
+
+  /**
+   * Clear all jobs (useful for testing or shutdown)
+   */
+  clear(): void {
+    for (const id of this.jobs.keys()) {
+      this.clearTimers(id);
+    }
+    this.jobs.clear();
+  }
 
   register(id: string, job: IJob, options: JobOptions) {
     const context = this.createJobContext(id, options);

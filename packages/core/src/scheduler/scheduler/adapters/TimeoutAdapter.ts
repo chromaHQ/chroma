@@ -8,6 +8,9 @@ export class TimeoutAdapter {
   private triggerCallback?: (id: string) => void;
 
   schedule(id: string, when: number): NodeJS.Timeout {
+    // Cancel any existing timer for this id to prevent leaks
+    this.cancel(id);
+
     const delay = Math.max(0, when - Date.now());
 
     const timeoutId = setTimeout(() => {
@@ -25,5 +28,22 @@ export class TimeoutAdapter {
       callback();
       this.callbacks.delete(id);
     }
+  }
+
+  /**
+   * Get the number of active timers (for debugging/monitoring)
+   */
+  size(): number {
+    return this.callbacks.size;
+  }
+
+  /**
+   * Clear all timers (for shutdown)
+   */
+  clear(): void {
+    for (const callback of this.callbacks.values()) {
+      callback();
+    }
+    this.callbacks.clear();
   }
 }
