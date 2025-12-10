@@ -56,7 +56,8 @@ export class Scheduler {
     this.timeout.cancel(id);
     this.registry.clearTimers(id);
 
-    const adapter = when - now < 60_000 ? this.timeout : this.alarm;
+    const delayMs = when - now;
+    const adapter = delayMs < 60_000 ? this.timeout : this.alarm;
     const timerId = adapter.schedule(id, when);
 
     // Only store timeout ID if we got one (Chrome alarms return null)
@@ -64,8 +65,8 @@ export class Scheduler {
       this.registry.setTimeoutId(id, timerId as unknown as NodeJS.Timeout);
     }
 
-    this.logger.debug(
-      `Job ${id} scheduled for ${new Date(when).toISOString()} (in ${Math.round((when - now) / 1000)}s) using ${adapter === this.alarm ? 'alarm' : 'timeout'}`,
+    this.logger.info(
+      `[Scheduler] Job "${id}" scheduled for ${new Date(when).toISOString()} (in ${Math.round(delayMs / 1000)}s) → ${adapter === this.alarm ? '⏰ AlarmAdapter' : '⏱️ TimeoutAdapter'}`,
     );
   }
 
