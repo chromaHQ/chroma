@@ -95,21 +95,22 @@ interface BridgeMessage {
 const CONFIG = {
   RETRY_AFTER: 1000,
   MAX_RETRIES: 10,
-  PING_INTERVAL: 5000, // Check every 5s (reduced frequency to avoid false positives during heavy operations)
+  PING_INTERVAL: 15000, // Check every 15s (tolerant of long operations)
   MAX_RETRY_COOLDOWN: 30000,
-  DEFAULT_TIMEOUT: 30000, // Increased from 20s to 30s for slow operations
+  DEFAULT_TIMEOUT: 60000, // 60s default for slow operations
   MAX_RETRY_DELAY: 30000,
-  PING_TIMEOUT: 10000, // Give SW 10s to respond (handles busy periods like large storage reads)
+  PING_TIMEOUT: 20000, // Give SW 20s to respond to ping
   ERROR_CHECK_INTERVAL: 100,
   MAX_ERROR_CHECKS: 10,
-  CONSECUTIVE_FAILURE_THRESHOLD: 5, // Require 5 consecutive failures (25s total) before reconnecting
+  CONSECUTIVE_FAILURE_THRESHOLD: 5, // Require 5 consecutive failures (75s total) before reconnecting
   RECONNECT_DELAY: 100,
   PORT_NAME: 'chroma-bridge',
   // Service worker restart retry settings (indefinite retries)
   SW_RESTART_RETRY_DELAY: 500,
   SW_RESTART_MAX_DELAY: 5000,
   // Threshold for counting timeouts toward reconnection (only count fast timeouts as failures)
-  TIMEOUT_FAILURE_THRESHOLD_MS: 15000, // Only count timeouts < 15s as potential SW issues
+  // Requests with timeout > this value are considered intentional long operations
+  TIMEOUT_FAILURE_THRESHOLD_MS: 30000, // Only count timeouts < 30s as potential SW issues
 } as const;
 
 // ============================================================================
@@ -839,13 +840,14 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
 
       // Start grace period - give SW time to fully initialize handlers
       // This prevents "Bridge reconnecting due to timeouts" right after connection
+      // Increased to 10s for Windows where SW startup and handler registration is slower
       reconnectionGracePeriodRef.current = true;
       setTimeout(() => {
         reconnectionGracePeriodRef.current = false;
         if (BRIDGE_ENABLE_LOGS) {
           console.log('[Bridge] Grace period ended, timeout monitoring active');
         }
-      }, 3000); // 3 second grace period
+      }, 10000); // 10 second grace period (increased for slow environments)
 
       // Emit bridge:connected event for stores to re-initialize
       // This is dispatched directly to local listeners (not over the port)

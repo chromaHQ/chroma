@@ -44,13 +44,13 @@ export class BridgeStore<T> implements CentralStore<T> {
   private isInitializing: boolean = false;
 
   // Store handler references for cleanup (prevents memory leaks)
-  private reconnectHandler: (() => void) | null = null;
-  private disconnectHandler: (() => void) | null = null;
-  private stateChangedHandler: (() => void) | null = null;
+  private reconnectHandler: ((payload?: unknown) => void) | null = null;
+  private disconnectHandler: ((payload?: unknown) => void) | null = null;
+  private stateChangedHandler: ((payload?: unknown) => void) | null = null;
 
   // Debounce timer for state sync (optimization for rapid updates)
   private stateSyncDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly stateSyncDebounceMs: number = 16; // ~1 frame at 60fps
+  private readonly stateSyncDebounceMs: number = 100; // Increased to 100ms to reduce burst traffic on Windows
 
   // Reconnect delay timer (to allow SW to bootstrap before re-initializing)
   private reconnectDelayTimer: ReturnType<typeof setTimeout> | null = null;
@@ -104,8 +104,9 @@ export class BridgeStore<T> implements CentralStore<T> {
           clearTimeout(this.reconnectDelayTimer);
           this.reconnectDelayTimer = null;
         }
-        // Add a small delay to allow SW to fully bootstrap its handlers
+        // Add a delay to allow SW to fully bootstrap its handlers
         // This prevents "No handler found" errors after SW restart
+        // Increased to 1500ms for Windows where SW startup is slower
         this.reconnectDelayTimer = setTimeout(() => {
           this.reconnectDelayTimer = null;
           if (STORE_ENABLE_LOGS) {
@@ -114,7 +115,7 @@ export class BridgeStore<T> implements CentralStore<T> {
             );
           }
           this.forceInitialize();
-        }, 500);
+        }, 1500);
       };
       this.bridge.on('bridge:connected', this.reconnectHandler);
     }
@@ -212,6 +213,25 @@ export class BridgeStore<T> implements CentralStore<T> {
   private stateSyncSequence = 0;
   private pendingStateSync = false;
 
+  /**
+   * Apply state directly from broadcast payload (no round-trip)
+   */
+  private applyBroadcastState(newState: T) {
+    if (!newState || typeof newState !== 'object') {
+      if (STORE_ENABLE_LOGS) {
+        console.warn(`BridgeStore[${this.storeName}]: Invalid broadcast state, ignoring`);
+      }
+      return;
+    }
+
+    this.previousState = this.currentState;
+    this.currentState = newState;
+    this.notifyListeners();
+  }
+
+  /**
+   * Fetch state from SW (fallback when broadcast doesn't include payload)
+   */
   private fetchAndApplyState() {
     // Prevent concurrent state fetches to avoid race conditions
     if (this.pendingStateSync) {
@@ -245,15 +265,23 @@ export class BridgeStore<T> implements CentralStore<T> {
   private setupStateSync() {
     // Listen for state updates from service worker
     if (this.bridge.on) {
-      this.stateChangedHandler = () => {
-        // Debounce rapid state change events to reduce network overhead
+      // Handler receives the full state in the broadcast payload - no need to re-fetch!
+      this.stateChangedHandler = (payload: unknown) => {
+        // Debounce rapid state change events to reduce re-renders
         if (this.stateSyncDebounceTimer) {
           clearTimeout(this.stateSyncDebounceTimer);
         }
 
         this.stateSyncDebounceTimer = setTimeout(() => {
           this.stateSyncDebounceTimer = null;
-          this.fetchAndApplyState();
+
+          // Use the broadcast payload directly if available (eliminates round-trip!)
+          if (payload && typeof payload === 'object') {
+            this.applyBroadcastState(payload as T);
+          } else {
+            // Fallback to fetch if no payload (shouldn't happen normally)
+            this.fetchAndApplyState();
+          }
         }, this.stateSyncDebounceMs);
       };
       this.bridge.on(`store:${this.storeName}:stateChanged`, this.stateChangedHandler);

@@ -114,9 +114,23 @@ export class StoreBuilder<T = any> {
 
     const store = createZustandStore<T>(persistedCreator);
 
+    // Debounce broadcasts to batch rapid state updates
+    // This prevents flooding UI with stateChanged events when multiple setState calls happen in sequence
+    let broadcastDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const BROADCAST_DEBOUNCE_MS = 50; // 50ms batching window
+
     store.subscribe(() => {
       if (runtimeBridge) {
-        runtimeBridge.broadcast(`store:${this.config.name}:stateChanged`, store.getState());
+        // Clear existing timer to extend the batch window
+        if (broadcastDebounceTimer) {
+          clearTimeout(broadcastDebounceTimer);
+        }
+
+        // Schedule broadcast after debounce period
+        broadcastDebounceTimer = setTimeout(() => {
+          broadcastDebounceTimer = null;
+          runtimeBridge.broadcast(`store:${this.config.name}:stateChanged`, store.getState());
+        }, BROADCAST_DEBOUNCE_MS);
       }
     });
 
