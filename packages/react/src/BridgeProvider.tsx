@@ -15,6 +15,23 @@ import {
 const BRIDGE_ENABLE_LOGS: boolean = true;
 const DIRECT_MESSAGE_FLAG = '__CHROMA_BRIDGE_DIRECT_MESSAGE__';
 
+// ============================================================================
+// Queued Request Types (for transparent retry)
+// ============================================================================
+
+interface QueuedRequest {
+  id: string;
+  key: string;
+  payload: unknown;
+  timeoutDuration: number;
+  resolve: (data: unknown) => void;
+  reject: (error: Error) => void;
+  retryCount: number;
+  maxRetries: number;
+  queuedAt: number;
+  idempotencyKey?: string; // For deduplication
+}
+
 interface BridgeDiagnosticsSnapshot {
   lastUpdatedAt: number;
   portDisconnects: number;
@@ -132,6 +149,23 @@ interface Bridge {
    * @param durationMs - How long to pause health checks in milliseconds
    */
   pauseHealthChecks: (durationMs: number) => void;
+  /**
+   * Ensure the service worker is connected and responsive before performing a heavy operation.
+   * This performs a quick ping and returns true if successful.
+   * On Windows/Brave, use this before crypto operations to verify the SW hasn't silently restarted.
+   *
+   * @example
+   * ```ts
+   * const ready = await bridge.ensureConnected();
+   * if (!ready) {
+   *   showToast('Connection lost. Please try again.');
+   *   return;
+   * }
+   * bridge.pauseHealthChecks(30000);
+   * await bridge.send('unlock', { password });
+   * ```
+   */
+  ensureConnected: () => Promise<boolean>;
 }
 
 export interface BridgeContextValue {
@@ -206,6 +240,14 @@ const CONFIG = {
   // Threshold for counting timeouts toward reconnection (only count fast timeouts as failures)
   // Requests with timeout > this value are considered intentional long operations
   TIMEOUT_FAILURE_THRESHOLD_MS: 30000, // Only count timeouts < 30s as potential SW issues
+  // Request queue settings for transparent retry
+  REQUEST_QUEUE_MAX_SIZE: 50, // Maximum queued requests during disconnection
+  REQUEST_MAX_RETRIES: 3, // Max retries per request before giving up
+  REQUEST_RETRY_BASE_DELAY: 200, // Base delay for request retry backoff
+  REQUEST_RETRY_MAX_DELAY: 2000, // Max delay for request retry backoff
+  QUEUE_DRAIN_DELAY: 50, // Delay between processing queued requests
+  // Optimistic health - don't surface unhealthy state immediately
+  HEALTH_GRACE_PERIOD_MS: 3000, // Wait this long before showing unhealthy
 } as const;
 
 // ============================================================================
@@ -252,32 +294,140 @@ export const BridgeContext = createContext<BridgeContextValue | null>(null);
 
 interface BridgeFactoryDeps {
   portRef: MutableRefObject<chrome.runtime.Port | null>;
+  portDisconnectedRef: MutableRefObject<boolean>; // Track if port has been disconnected (stale port detection)
   pendingRequestsRef: MutableRefObject<Map<string, PendingRequest>>;
+  requestQueueRef: MutableRefObject<QueuedRequest[]>; // Queue for requests during disconnection
+  activeIdempotencyKeysRef: MutableRefObject<Set<string>>; // Track in-flight requests for deduplication
   eventListenersRef: MutableRefObject<Map<string, Set<(payload: unknown) => void>>>;
   messageIdRef: MutableRefObject<number>;
   isConnectedRef: MutableRefObject<boolean>;
+  isReconnectingRef: MutableRefObject<boolean>; // Track soft reconnection state
   consecutiveTimeoutsRef: MutableRefObject<number>;
   reconnectionGracePeriodRef: MutableRefObject<boolean>;
   healthPausedUntilRef: MutableRefObject<number>;
   defaultTimeout: number;
   timeoutFailureThreshold: number;
   onReconnectNeeded: () => void;
+  drainRequestQueue: () => void; // Function to drain queued requests after reconnection
 }
 
 function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
   const {
     portRef,
+    portDisconnectedRef,
     pendingRequestsRef,
+    requestQueueRef,
+    activeIdempotencyKeysRef,
     eventListenersRef,
     messageIdRef,
     isConnectedRef,
+    isReconnectingRef,
     consecutiveTimeoutsRef,
     reconnectionGracePeriodRef,
     healthPausedUntilRef,
     defaultTimeout,
     timeoutFailureThreshold,
     onReconnectNeeded,
+    drainRequestQueue,
   } = deps;
+
+  /**
+   * Check if the port is valid for sending messages.
+   * On Windows/Brave, the port object can exist but be stale (SW restarted).
+   */
+  const isPortValid = (): boolean => {
+    // No port at all
+    if (!portRef.current) return false;
+
+    // Port was explicitly disconnected (we received onDisconnect)
+    if (portDisconnectedRef.current) return false;
+
+    // Not marked as connected by our state machine
+    if (!isConnectedRef.current) return false;
+
+    return true;
+  };
+
+  /**
+   * Generate an idempotency key for request deduplication.
+   * This prevents duplicate requests during retries.
+   */
+  const generateIdempotencyKey = (key: string, payload: unknown): string => {
+    // For requests that modify state, use a stable hash
+    // For reads, allow duplicates
+    const isWriteOperation =
+      !key.startsWith('get') && !key.startsWith('fetch') && key !== '__ping__';
+    if (!isWriteOperation) return ''; // No deduplication for reads
+
+    try {
+      return `${key}:${JSON.stringify(payload)}`;
+    } catch {
+      return `${key}:${Date.now()}`;
+    }
+  };
+
+  /**
+   * Queue a request for later execution when disconnected.
+   * Returns true if queued, false if queue is full.
+   */
+  const queueRequest = (
+    id: string,
+    key: string,
+    payload: unknown,
+    timeoutDuration: number,
+    resolve: (data: unknown) => void,
+    reject: (error: Error) => void,
+    idempotencyKey?: string,
+  ): boolean => {
+    // Don't queue internal messages
+    if (key === '__ping__' || key === '__bridge_diagnostics__') {
+      return false;
+    }
+
+    // Check queue size limit
+    if (requestQueueRef.current.length >= CONFIG.REQUEST_QUEUE_MAX_SIZE) {
+      if (BRIDGE_ENABLE_LOGS) {
+        console.warn('[Bridge] Request queue full, rejecting request');
+      }
+      return false;
+    }
+
+    // Check for duplicate idempotency key
+    if (idempotencyKey && activeIdempotencyKeysRef.current.has(idempotencyKey)) {
+      if (BRIDGE_ENABLE_LOGS) {
+        console.log(`[Bridge] Duplicate request detected, skipping: ${key}`);
+      }
+      // Don't reject - the original request will resolve/reject
+      return true;
+    }
+
+    if (idempotencyKey) {
+      activeIdempotencyKeysRef.current.add(idempotencyKey);
+    }
+
+    const queuedRequest: QueuedRequest = {
+      id,
+      key,
+      payload,
+      timeoutDuration,
+      resolve,
+      reject,
+      retryCount: 0,
+      maxRetries: CONFIG.REQUEST_MAX_RETRIES,
+      queuedAt: Date.now(),
+      idempotencyKey,
+    };
+
+    requestQueueRef.current.push(queuedRequest);
+
+    if (BRIDGE_ENABLE_LOGS) {
+      console.log(
+        `[Bridge] Request queued: ${key} (queue size: ${requestQueueRef.current.length})`,
+      );
+    }
+
+    return true;
+  };
 
   const rejectAllPending = (message: string) => {
     // Only reject requests with short timeouts (default requests)
@@ -298,22 +448,41 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
   ): Promise<Res> => {
     return new Promise((resolve, reject) => {
       const id = `msg_${++messageIdRef.current}`;
+      const idempotencyKey = generateIdempotencyKey(key, payload);
 
       const finalizePendingWithError = (error: Error | string) => {
         const pending = pendingRequestsRef.current.get(id);
         if (!pending) return;
         clearTimeout(pending.timeout);
         pendingRequestsRef.current.delete(id);
+        // Clean up idempotency key
+        if (idempotencyKey) {
+          activeIdempotencyKeysRef.current.delete(idempotencyKey);
+        }
         pending.reject(error instanceof Error ? error : new Error(error));
       };
 
-      const triggerRuntimeFallback = (reason: string) => {
+      /**
+       * Fallback to chrome.runtime.sendMessage when port is unavailable.
+       * This provides a direct message path that can work even when the port is stale.
+       * On Windows/Brave, this is critical for recovering from silent SW restarts.
+       */
+      const triggerRuntimeFallback = (reason: string, retryCount = 0) => {
+        const MAX_FALLBACK_RETRIES = 2;
+        const FALLBACK_RETRY_DELAY = 300;
+
         if (BRIDGE_ENABLE_LOGS) {
-          console.warn(`[Bridge] Falling back to runtime.sendMessage (${reason})`);
+          console.warn(
+            `[Bridge] Falling back to runtime.sendMessage (${reason})${retryCount > 0 ? ` [retry ${retryCount}]` : ''}`,
+          );
         }
 
         recordDiagnostics.fallbackSent(reason);
-        onReconnectNeeded();
+
+        // Only trigger reconnect on first attempt, not on retries
+        if (retryCount === 0) {
+          onReconnectNeeded();
+        }
 
         if (!chrome?.runtime?.sendMessage) {
           const message = 'chrome.runtime.sendMessage not available';
@@ -328,13 +497,30 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
               id,
               key,
               payload,
-              metadata: { transport: 'direct', fallbackReason: reason },
+              metadata: { transport: 'direct', fallbackReason: reason, retryCount },
               [DIRECT_MESSAGE_FLAG]: true,
             },
             (response: BridgeMessage | undefined) => {
               const runtimeError = consumeRuntimeError();
               const pending = pendingRequestsRef.current.get(id);
               if (!pending) return;
+
+              // On "Receiving end does not exist" errors, retry after a short delay
+              // This handles the case where SW is restarting and not yet ready
+              if (
+                runtimeError?.includes('Receiving end does not exist') &&
+                retryCount < MAX_FALLBACK_RETRIES
+              ) {
+                if (BRIDGE_ENABLE_LOGS) {
+                  console.warn(
+                    `[Bridge] SW not ready, retrying fallback in ${FALLBACK_RETRY_DELAY}ms...`,
+                  );
+                }
+                setTimeout(() => {
+                  triggerRuntimeFallback(reason, retryCount + 1);
+                }, FALLBACK_RETRY_DELAY);
+                return;
+              }
 
               if (runtimeError) {
                 recordDiagnostics.fallbackError(runtimeError);
@@ -420,18 +606,71 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
         timeoutDuration,
       });
 
-      if (!portRef.current) {
-        triggerRuntimeFallback('port-unavailable');
+      // Use improved port validity check instead of just checking portRef.current
+      // This catches stale ports on Windows/Brave where the port object exists but is disconnected
+      if (!isPortValid()) {
+        // If we're actively reconnecting, queue the request for later instead of immediately failing
+        // This provides a seamless experience where users don't see errors during brief disconnections
+        if (isReconnectingRef.current) {
+          // Remove from pending (will be re-added when dequeued)
+          clearTimeout(timeout);
+          pendingRequestsRef.current.delete(id);
+
+          const queued = queueRequest(
+            id,
+            key,
+            payload,
+            timeoutDuration,
+            resolve as (data: unknown) => void,
+            reject,
+            idempotencyKey,
+          );
+
+          if (queued) {
+            if (BRIDGE_ENABLE_LOGS) {
+              console.log(`[Bridge] Request queued during reconnection: ${key}`);
+            }
+            return;
+          }
+        }
+
+        // Not reconnecting or queue full - fall back to direct message
+        const reason = !portRef.current
+          ? 'port-unavailable'
+          : portDisconnectedRef.current
+            ? 'port-disconnected'
+            : 'port-not-connected';
+        triggerRuntimeFallback(reason);
         return;
       }
 
       try {
-        portRef.current.postMessage({ id, key, payload });
+        portRef.current!.postMessage({ id, key, payload });
 
         // Check for async runtime errors
         setTimeout(() => {
           const errorMessage = consumeRuntimeError();
           if (errorMessage && pendingRequestsRef.current.has(id)) {
+            // On error, try to queue for retry instead of immediately failing
+            if (isReconnectingRef.current) {
+              const pending = pendingRequestsRef.current.get(id);
+              if (pending) {
+                clearTimeout(pending.timeout);
+                pendingRequestsRef.current.delete(id);
+
+                const queued = queueRequest(
+                  id,
+                  key,
+                  payload,
+                  timeoutDuration,
+                  pending.resolve,
+                  pending.reject,
+                  idempotencyKey,
+                );
+
+                if (queued) return;
+              }
+            }
             finalizePendingWithError(errorMessage);
           }
         }, 0);
@@ -506,6 +745,30 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
       healthPausedUntilRef.current = pauseUntil;
       if (BRIDGE_ENABLE_LOGS) {
         console.log(`[Bridge] Health checks paused for ${Math.round(durationMs / 1000)}s`);
+      }
+    },
+    ensureConnected: async (): Promise<boolean> => {
+      // First check local state - if we know we're disconnected, don't even try
+      if (!isPortValid()) {
+        if (BRIDGE_ENABLE_LOGS) {
+          console.warn('[Bridge] ensureConnected: Port invalid, triggering reconnect');
+        }
+        onReconnectNeeded();
+        return false;
+      }
+
+      // Perform a quick ping with a shorter timeout to verify SW is responsive
+      // Use 5s timeout instead of default PING_TIMEOUT for faster failure detection
+      const QUICK_PING_TIMEOUT = 5000;
+      try {
+        await send('__ping__', undefined, QUICK_PING_TIMEOUT);
+        return true;
+      } catch {
+        if (BRIDGE_ENABLE_LOGS) {
+          console.warn('[Bridge] ensureConnected: Ping failed, SW may be unresponsive');
+        }
+        // Don't automatically trigger reconnect here - let the caller decide
+        return false;
       }
     },
   };
@@ -632,8 +895,15 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
 
   // Connection refs
   const portRef = useRef<chrome.runtime.Port | null>(null);
+  const portDisconnectedRef = useRef(false); // Tracks if port received onDisconnect (stale port detection for Windows/Brave)
   const isConnectedRef = useRef(false);
   const isConnectingRef = useRef(false);
+  const isReconnectingRef = useRef(false); // Tracks soft reconnection (queue requests instead of failing)
+
+  // Request queue refs - for transparent retry during reconnection
+  const requestQueueRef = useRef<QueuedRequest[]>([]);
+  const activeIdempotencyKeysRef = useRef<Set<string>>(new Set());
+  const queueDrainTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Retry refs
   const retryCountRef = useRef(0);
@@ -700,7 +970,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   );
 
   // Cleanup
-  const cleanup = useCallback((emitDisconnect = true) => {
+  const cleanup = useCallback((emitDisconnect = true, preserveQueue = false) => {
     const wasConnected = isConnectedRef.current || portRef.current !== null;
 
     // Emit disconnected event BEFORE cleanup so listeners can react, but only if we were connected
@@ -718,6 +988,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
 
     clearTimeoutSafe(reconnectTimeoutRef);
     clearTimeoutSafe(triggerReconnectTimeoutRef);
+    clearTimeoutSafe(queueDrainTimeoutRef);
     clearIntervalSafe(errorCheckIntervalRef);
     clearIntervalSafe(pingIntervalRef);
 
@@ -730,12 +1001,48 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       portRef.current = null;
     }
 
-    // Reject pending requests
-    pendingRequestsRef.current.forEach(({ reject, timeout }) => {
-      clearTimeout(timeout);
-      reject(new Error('Bridge disconnected'));
-    });
-    pendingRequestsRef.current.clear();
+    // Reset port disconnected flag for next connection attempt
+    portDisconnectedRef.current = false;
+
+    // DON'T reject pending requests if we're preserving queue for soft reconnect
+    // Instead, move them to the queue so they can be retried
+    if (preserveQueue) {
+      pendingRequestsRef.current.forEach(({ resolve, reject, timeout, timeoutDuration }, id) => {
+        clearTimeout(timeout);
+        // Queue for retry (will be sent when reconnected)
+        const key = id.split('_')[0] || 'unknown'; // Extract key from id if possible
+        requestQueueRef.current.push({
+          id,
+          key,
+          payload: undefined, // We don't have the payload anymore, but the request is already in flight
+          timeoutDuration,
+          resolve,
+          reject,
+          retryCount: 0,
+          maxRetries: CONFIG.REQUEST_MAX_RETRIES,
+          queuedAt: Date.now(),
+        });
+      });
+      pendingRequestsRef.current.clear();
+    } else {
+      // Hard cleanup - reject all pending
+      pendingRequestsRef.current.forEach(({ reject, timeout }) => {
+        clearTimeout(timeout);
+        reject(new Error('Bridge disconnected'));
+      });
+      pendingRequestsRef.current.clear();
+
+      // Also reject queued requests on hard cleanup
+      requestQueueRef.current.forEach(({ reject, idempotencyKey }) => {
+        if (idempotencyKey) {
+          activeIdempotencyKeysRef.current.delete(idempotencyKey);
+        }
+        reject(new Error('Bridge disconnected'));
+      });
+      requestQueueRef.current = [];
+      activeIdempotencyKeysRef.current.clear();
+    }
+
     // NOTE: We do NOT clear eventListenersRef during reconnection - listeners should persist
     // However, if emitDisconnect is false (unmount), we should clear listeners to prevent memory leaks
     if (!emitDisconnect) {
@@ -785,6 +1092,113 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
     if (message.id && BRIDGE_ENABLE_LOGS) {
       console.warn('[Bridge] Received response for unknown/expired request:', message.id);
     }
+  }, []);
+
+  // Drain request queue - called after successful reconnection
+  // This processes queued requests one by one with small delays to avoid overwhelming the SW
+  const drainRequestQueue = useCallback(() => {
+    if (requestQueueRef.current.length === 0) {
+      if (BRIDGE_ENABLE_LOGS) {
+        console.log('[Bridge] Request queue empty, nothing to drain');
+      }
+      return;
+    }
+
+    if (!bridgeRef.current || !isConnectedRef.current) {
+      if (BRIDGE_ENABLE_LOGS) {
+        console.log('[Bridge] Cannot drain queue - not connected');
+      }
+      return;
+    }
+
+    if (BRIDGE_ENABLE_LOGS) {
+      console.log(`[Bridge] Draining request queue (${requestQueueRef.current.length} requests)`);
+    }
+
+    const processNextRequest = () => {
+      if (!isMountedRef.current || !isConnectedRef.current) return;
+
+      const request = requestQueueRef.current.shift();
+      if (!request) {
+        // Queue exhausted
+        if (BRIDGE_ENABLE_LOGS) {
+          console.log('[Bridge] Request queue drained successfully');
+        }
+        return;
+      }
+
+      // Check if request has expired (been in queue too long)
+      const queuedDuration = Date.now() - request.queuedAt;
+      if (queuedDuration > request.timeoutDuration) {
+        if (BRIDGE_ENABLE_LOGS) {
+          console.warn(`[Bridge] Queued request expired: ${request.key}`);
+        }
+        if (request.idempotencyKey) {
+          activeIdempotencyKeysRef.current.delete(request.idempotencyKey);
+        }
+        request.reject(new Error(`Request expired while queued: ${request.key}`));
+        // Process next request
+        queueDrainTimeoutRef.current = setTimeout(processNextRequest, CONFIG.QUEUE_DRAIN_DELAY);
+        return;
+      }
+
+      if (BRIDGE_ENABLE_LOGS) {
+        console.log(
+          `[Bridge] Re-sending queued request: ${request.key} (retry ${request.retryCount + 1}/${request.maxRetries})`,
+        );
+      }
+
+      // Re-send the request using the bridge
+      bridgeRef
+        .current!.send(request.key, request.payload, request.timeoutDuration - queuedDuration)
+        .then((data) => {
+          if (request.idempotencyKey) {
+            activeIdempotencyKeysRef.current.delete(request.idempotencyKey);
+          }
+          request.resolve(data);
+        })
+        .catch((error) => {
+          request.retryCount++;
+
+          if (request.retryCount < request.maxRetries && isConnectedRef.current) {
+            // Re-queue for retry with exponential backoff
+            const retryDelay = calculateBackoffDelay(
+              request.retryCount,
+              CONFIG.REQUEST_RETRY_BASE_DELAY,
+              CONFIG.REQUEST_RETRY_MAX_DELAY,
+            );
+
+            if (BRIDGE_ENABLE_LOGS) {
+              console.log(
+                `[Bridge] Request failed, re-queuing: ${request.key} (retry in ${retryDelay}ms)`,
+              );
+            }
+
+            setTimeout(() => {
+              if (isMountedRef.current) {
+                requestQueueRef.current.unshift(request); // Add to front for immediate retry
+                processNextRequest();
+              }
+            }, retryDelay);
+            return;
+          }
+
+          // Max retries exceeded - give up
+          if (request.idempotencyKey) {
+            activeIdempotencyKeysRef.current.delete(request.idempotencyKey);
+          }
+          request.reject(error);
+        })
+        .finally(() => {
+          // Process next request after a small delay
+          if (isMountedRef.current) {
+            queueDrainTimeoutRef.current = setTimeout(processNextRequest, CONFIG.QUEUE_DRAIN_DELAY);
+          }
+        });
+    };
+
+    // Start processing
+    processNextRequest();
   }, []);
 
   // Schedule reconnect with backoff
@@ -841,6 +1255,9 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         return;
       }
 
+      // Enable soft reconnection mode - queue requests instead of failing
+      isReconnectingRef.current = true;
+
       swRestartRetryCountRef.current++;
       const delay = calculateBackoffDelay(
         swRestartRetryCountRef.current,
@@ -882,7 +1299,8 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
     // The SW restart retry path handles its own backoff
 
     isConnectingRef.current = true;
-    cleanup(false); // Internal reset before attempting new connection
+    // Use soft cleanup - preserve request queue for retry
+    cleanup(false, true); // Internal reset before attempting new connection, but preserve queue
 
     if (!chrome?.runtime?.connect) {
       handleError(new Error('Chrome runtime not available'));
@@ -935,6 +1353,11 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         if (BRIDGE_ENABLE_LOGS) {
           console.warn('[Bridge] *** onDisconnect FIRED ***');
         }
+
+        // Mark port as disconnected IMMEDIATELY to prevent stale port usage
+        // This is critical on Windows/Brave where the port object may still exist
+        // but can't send messages after onDisconnect fires
+        portDisconnectedRef.current = true;
         isConnectingRef.current = false;
 
         const disconnectError = consumeRuntimeError();
@@ -947,7 +1370,8 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         }
 
         updateStatus('disconnected');
-        cleanup();
+        // Use soft cleanup - preserve queue for transparent retry
+        cleanup(true, true);
 
         // Only schedule reconnect if still mounted
         // Always use SW restart retry (infinite) since any disconnect could be SW stopping
@@ -968,12 +1392,13 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         if (!isMountedRef.current) return;
         setIsServiceWorkerAlive(false);
         updateStatus('reconnecting');
+        isReconnectingRef.current = true; // Enable request queueing
         retryCountRef.current = 0;
         isConnectingRef.current = false;
         clearTimeoutSafe(triggerReconnectTimeoutRef);
         triggerReconnectTimeoutRef.current = setTimeout(() => {
           if (!isMountedRef.current) return;
-          cleanup(false); // Already notified when entering reconnecting state
+          cleanup(false, true); // Soft cleanup - preserve queue
           connect();
         }, CONFIG.RECONNECT_DELAY);
       };
@@ -981,19 +1406,26 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       // Create bridge instance
       const bridgeInstance = createBridgeInstance({
         portRef,
+        portDisconnectedRef,
         pendingRequestsRef,
+        requestQueueRef,
+        activeIdempotencyKeysRef,
         eventListenersRef,
         messageIdRef,
         isConnectedRef,
+        isReconnectingRef,
         consecutiveTimeoutsRef,
         reconnectionGracePeriodRef,
         healthPausedUntilRef,
         defaultTimeout,
         timeoutFailureThreshold,
         onReconnectNeeded: triggerReconnect,
+        drainRequestQueue,
       });
 
-      // Mark connected
+      // Mark connected - reset disconnected flag since we have a fresh port
+      portDisconnectedRef.current = false;
+      isReconnectingRef.current = false; // Disable request queueing - we're connected now
       setBridge(bridgeInstance);
       isConnectedRef.current = true;
       updateStatus('connected');
@@ -1003,6 +1435,14 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       swRestartRetryCountRef.current = 0; // Reset SW restart counter on success
       consecutiveTimeoutsRef.current = 0;
       isConnectingRef.current = false;
+
+      // Drain queued requests after successful connection
+      // Small delay to let the SW fully initialize handlers
+      setTimeout(() => {
+        if (isMountedRef.current && isConnectedRef.current) {
+          drainRequestQueue();
+        }
+      }, 200);
 
       // Start grace period - give SW time to fully initialize handlers
       // This prevents "Bridge reconnecting due to timeouts" right after connection
@@ -1063,6 +1503,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
     handleMessage,
     scheduleReconnect,
     scheduleSwRestartReconnect,
+    drainRequestQueue,
     defaultTimeout,
     updateStatus,
     pingInterval,

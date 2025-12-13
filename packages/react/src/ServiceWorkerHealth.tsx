@@ -32,6 +32,7 @@ import {
   useEffect,
   useCallback,
   useMemo,
+  useRef,
   useSyncExternalStore,
   type ReactNode,
   type FC,
@@ -152,6 +153,9 @@ function broadcastHealthChange(status: HealthStatus, isHealthy: boolean): void {
 
 const ServiceWorkerHealthContext = createContext<ServiceWorkerHealthContextValue | null>(null);
 
+// Grace period configuration - don't surface unhealthy status immediately
+const HEALTH_GRACE_PERIOD_MS = 3000;
+
 // ============================================================================
 // Provider
 // ============================================================================
@@ -162,13 +166,16 @@ export const ServiceWorkerHealthProvider: FC<ServiceWorkerHealthProviderProps> =
 }) => {
   const bridgeContext = useContext(BridgeContext);
   const [lastHealthyAt, setLastHealthyAt] = useState<number | null>(null);
+  const [unhealthyStartedAt, setUnhealthyStartedAt] = useState<number | null>(null);
+  const [graceExpired, setGraceExpired] = useState(false);
+  const graceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Extract primitive values to avoid unnecessary re-renders from context object changes
   const bridgeStatus = bridgeContext?.status;
   const isServiceWorkerAlive = bridgeContext?.isServiceWorkerAlive ?? false;
 
-  // Derive health status from bridge context (using primitives for stable deps)
-  const derivedStatus = useMemo((): HealthStatus => {
+  // Derive raw health status from bridge context (using primitives for stable deps)
+  const rawStatus = useMemo((): HealthStatus => {
     if (!bridgeStatus) return 'unknown';
 
     // Connected and SW responding = healthy
@@ -185,16 +192,55 @@ export const ServiceWorkerHealthProvider: FC<ServiceWorkerHealthProviderProps> =
     return 'unhealthy';
   }, [bridgeStatus, isServiceWorkerAlive]);
 
+  // Track when we become unhealthy and set up grace period
+  useEffect(() => {
+    if (rawStatus === 'healthy') {
+      // Clear grace period when healthy
+      setUnhealthyStartedAt(null);
+      setGraceExpired(false);
+      if (graceTimeoutRef.current) {
+        clearTimeout(graceTimeoutRef.current);
+        graceTimeoutRef.current = null;
+      }
+    } else if (rawStatus !== 'healthy' && !unhealthyStartedAt) {
+      // Just became unhealthy - start grace period
+      setUnhealthyStartedAt(Date.now());
+      graceTimeoutRef.current = setTimeout(() => {
+        setGraceExpired(true);
+      }, HEALTH_GRACE_PERIOD_MS);
+    }
+
+    return () => {
+      if (graceTimeoutRef.current) {
+        clearTimeout(graceTimeoutRef.current);
+      }
+    };
+  }, [rawStatus, unhealthyStartedAt]);
+
+  // Optimistic health status - show healthy during brief reconnections
+  // Only surface unhealthy/recovering after grace period expires
+  const derivedStatus = useMemo((): HealthStatus => {
+    if (rawStatus === 'healthy') return 'healthy';
+
+    // During grace period, report as healthy (optimistic)
+    // This prevents UI flicker during brief reconnections
+    if (!graceExpired && lastHealthyAt) {
+      return 'healthy';
+    }
+
+    return rawStatus;
+  }, [rawStatus, graceExpired, lastHealthyAt]);
+
   const isHealthy = derivedStatus === 'healthy';
   const isRecovering = derivedStatus === 'recovering';
   const isLoading = derivedStatus === 'recovering' || derivedStatus === 'unknown';
 
   // Track last healthy timestamp
   useEffect(() => {
-    if (isHealthy) {
+    if (rawStatus === 'healthy') {
       setLastHealthyAt(Date.now());
     }
-  }, [isHealthy]);
+  }, [rawStatus]);
 
   // Broadcast changes to global subscribers and callback
   useEffect(() => {
