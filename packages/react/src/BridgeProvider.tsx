@@ -1,3 +1,31 @@
+/**
+ * @fileoverview BridgeProvider - React context for Chrome extension bridge communication.
+ *
+ * Provides a robust, fault-tolerant communication layer between React UI and
+ * Chrome extension service worker. Handles connection lifecycle, message routing,
+ * automatic reconnection, request queuing, and health monitoring.
+ *
+ * Key features:
+ * - Automatic reconnection with exponential backoff
+ * - Request queuing during disconnection for seamless UX
+ * - Critical operation support with nonces for idempotency
+ * - Health monitoring with configurable ping intervals
+ * - Broadcast message support for real-time updates
+ *
+ * @module @chromahq/react/BridgeProvider
+ *
+ * @example
+ * ```tsx
+ * // App setup
+ * <BridgeProvider pingInterval={5000} maxRetries={10}>
+ *   <App />
+ * </BridgeProvider>
+ *
+ * // Using the bridge
+ * const { bridge, status } = useBridge();
+ * const result = await bridge.send('transfer', { to: '0x...', amount: '1000' });
+ * ```
+ */
 import {
   useEffect,
   useState,
@@ -132,12 +160,79 @@ const recordDiagnostics = {
 
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error' | 'reconnecting';
 
+/**
+ * Options for critical operations that need acknowledgment and deduplication.
+ */
+export interface CriticalOperationOptions {
+  /**
+   * Client-generated nonce for idempotency. If not provided, one will be generated.
+   * The SW should store processed nonces and reject duplicates.
+   */
+  nonce?: string;
+  /**
+   * If true, the request will NOT be queued during disconnection - it will fail immediately.
+   * Use this for operations where you want explicit user retry rather than automatic retry.
+   * Default: false (requests are queued)
+   */
+  noQueue?: boolean;
+  /**
+   * Callback fired when SW acknowledges receipt of the request (before processing).
+   * Use this to update UI to show "processing" state.
+   */
+  onAcknowledged?: () => void;
+}
+
+/**
+ * Result of a critical operation, including metadata about the request.
+ */
+export interface CriticalOperationResult<T> {
+  data: T;
+  nonce: string;
+  acknowledged: boolean;
+}
+
 interface Bridge {
   send: <Req = unknown, Res = unknown>(
     key: string,
     payload?: Req,
     timeoutDuration?: number,
   ) => Promise<Res>;
+  /**
+   * Send a critical operation that requires acknowledgment and idempotency.
+   * Use this for transfers, signing, and other non-idempotent operations.
+   *
+   * @example
+   * ```ts
+   * const result = await bridge.sendCritical('transfer', {
+   *   to: '0x...',
+   *   amount: '1000000',
+   * }, {
+   *   onAcknowledged: () => setStatus('processing'),
+   *   noQueue: true, // Don't auto-retry transfers
+   * });
+   * ```
+   */
+  /** Alias: clearer naming for nonce/idempotency semantics */
+  sendWithNonce: <Req = unknown, Res = unknown>(
+    key: string,
+    payload?: Req,
+    options?: CriticalOperationOptions,
+    timeoutDuration?: number,
+  ) => Promise<CriticalOperationResult<Res>>;
+  /** Alias for callers that think in idempotency terms */
+  sendIdempotent: <Req = unknown, Res = unknown>(
+    key: string,
+    payload?: Req,
+    options?: CriticalOperationOptions,
+    timeoutDuration?: number,
+  ) => Promise<CriticalOperationResult<Res>>;
+  /** Back-compat name (kept) */
+  sendCritical: <Req = unknown, Res = unknown>(
+    key: string,
+    payload?: Req,
+    options?: CriticalOperationOptions,
+    timeoutDuration?: number,
+  ) => Promise<CriticalOperationResult<Res>>;
   broadcast: (key: string, payload: unknown) => void;
   on: (key: string, handler: (payload: unknown) => void) => void;
   off: (key: string, handler: (payload: unknown) => void) => void;
@@ -206,6 +301,8 @@ interface PendingRequest {
   reject: (error: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
   timeoutDuration: number; // The timeout duration for this request (used to distinguish slow operations)
+  key: string; // Original request key for queue recovery
+  payload: unknown; // Original payload for queue recovery
 }
 
 interface BridgeMessage {
@@ -224,14 +321,14 @@ interface BridgeMessage {
 const CONFIG = {
   RETRY_AFTER: 1000,
   MAX_RETRIES: 10,
-  PING_INTERVAL: 15000, // Check every 15s (tolerant of long operations)
+  PING_INTERVAL: 5000, // Check every 5s for faster SW down detection
   MAX_RETRY_COOLDOWN: 30000,
   DEFAULT_TIMEOUT: 60000, // 60s default for slow operations
   MAX_RETRY_DELAY: 30000,
-  PING_TIMEOUT: 20000, // Give SW 20s to respond to ping
+  PING_TIMEOUT: 8000, // Give SW 8s to respond to ping (reduced from 20s)
   ERROR_CHECK_INTERVAL: 100,
   MAX_ERROR_CHECKS: 10,
-  CONSECUTIVE_FAILURE_THRESHOLD: 5, // Require 5 consecutive failures (75s total) before reconnecting
+  CONSECUTIVE_FAILURE_THRESHOLD: 2, // Require 2 consecutive failures (~10s total) before reconnecting
   RECONNECT_DELAY: 100,
   PORT_NAME: 'chroma-bridge',
   // Service worker restart retry settings (indefinite retries)
@@ -247,12 +344,23 @@ const CONFIG = {
   REQUEST_RETRY_MAX_DELAY: 2000, // Max delay for request retry backoff
   QUEUE_DRAIN_DELAY: 50, // Delay between processing queued requests
   // Optimistic health - don't surface unhealthy state immediately
-  HEALTH_GRACE_PERIOD_MS: 3000, // Wait this long before showing unhealthy
+  HEALTH_GRACE_PERIOD_MS: 1000, // Wait this long before showing unhealthy (reduced from 3s)
+  // Critical operation settings
+  CRITICAL_OP_TIMEOUT: 120000, // 2 minutes for critical operations (transfers, signing)
 } as const;
 
 // ============================================================================
 // Utilities
 // ============================================================================
+
+/** Generate a cryptographically secure nonce for idempotency */
+const generateNonce = (): string => {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  // Fallback for older browsers
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+};
 
 /** Calculate exponential backoff delay with a maximum cap */
 const calculateBackoffDelay = (attempt: number, baseDelay: number, maxDelay: number): number =>
@@ -604,6 +712,8 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
         reject,
         timeout,
         timeoutDuration,
+        key,
+        payload,
       });
 
       // Use improved port validity check instead of just checking portRef.current
@@ -771,6 +881,98 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
         return false;
       }
     },
+    sendCritical: async <Req, Res = unknown>(
+      key: string,
+      payload?: Req,
+      options?: CriticalOperationOptions,
+      timeoutDuration: number = CONFIG.CRITICAL_OP_TIMEOUT,
+    ): Promise<CriticalOperationResult<Res>> => {
+      const nonce = options?.nonce || generateNonce();
+      const noQueue = options?.noQueue ?? false;
+
+      // If noQueue is true and we're not connected, fail immediately
+      if (noQueue && !isPortValid()) {
+        throw new Error('Not connected. Please try again.');
+      }
+
+      // Wrap payload with nonce and critical flag
+      const criticalPayload = {
+        __critical__: true,
+        __nonce__: nonce,
+        __timestamp__: Date.now(),
+        data: payload,
+      };
+
+      // Set up acknowledgment listener before sending
+      let acknowledged = false;
+      const ackKey = `__ack__:${nonce}`;
+      const ackPromise = new Promise<void>((resolveAck) => {
+        const ackHandler = () => {
+          acknowledged = true;
+          options?.onAcknowledged?.();
+          resolveAck();
+          off(ackKey, ackHandler);
+        };
+        on(ackKey, ackHandler);
+
+        // Don't wait forever for ack - but don't reject, just resolve
+        setTimeout(() => {
+          off(ackKey, ackHandler);
+          resolveAck();
+        }, 5000);
+      });
+
+      if (BRIDGE_ENABLE_LOGS) {
+        console.log(`[Bridge] Sending critical operation: ${key} (nonce: ${nonce})`);
+      }
+
+      try {
+        // Race: wait for acknowledgment while sending the actual request
+        // The ack should come quickly if SW receives the message
+        const [data] = await Promise.all([
+          send<typeof criticalPayload, Res>(key, criticalPayload, timeoutDuration),
+          ackPromise,
+        ]);
+
+        if (BRIDGE_ENABLE_LOGS) {
+          console.log(
+            `[Bridge] Critical operation completed: ${key} (nonce: ${nonce}, acked: ${acknowledged})`,
+          );
+        }
+
+        return {
+          data,
+          nonce,
+          acknowledged,
+        };
+      } catch (error) {
+        if (BRIDGE_ENABLE_LOGS) {
+          console.error(
+            `[Bridge] Critical operation failed: ${key} (nonce: ${nonce}, acked: ${acknowledged})`,
+            error,
+          );
+        }
+        // Re-throw with additional context
+        const err = error instanceof Error ? error : new Error(String(error));
+        (err as any).nonce = nonce;
+        (err as any).acknowledged = acknowledged;
+        throw err;
+      }
+    },
+    sendWithNonce: async <Req, Res = unknown>(
+      key: string,
+      payload?: Req,
+      options?: CriticalOperationOptions,
+      timeoutDuration?: number,
+    ): Promise<CriticalOperationResult<Res>> =>
+      bridge.sendCritical(key, payload, options, timeoutDuration),
+    sendIdempotent: async <Req, Res = unknown>(
+      key: string,
+      payload?: Req,
+      options?: CriticalOperationOptions,
+      timeoutDuration?: number,
+    ): Promise<CriticalOperationResult<Res>> =>
+      bridge.sendCritical(key, payload, options, timeoutDuration),
   };
 
   return bridge;
@@ -1007,22 +1209,32 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
     // DON'T reject pending requests if we're preserving queue for soft reconnect
     // Instead, move them to the queue so they can be retried
     if (preserveQueue) {
-      pendingRequestsRef.current.forEach(({ resolve, reject, timeout, timeoutDuration }, id) => {
-        clearTimeout(timeout);
-        // Queue for retry (will be sent when reconnected)
-        const key = id.split('_')[0] || 'unknown'; // Extract key from id if possible
-        requestQueueRef.current.push({
-          id,
-          key,
-          payload: undefined, // We don't have the payload anymore, but the request is already in flight
-          timeoutDuration,
-          resolve,
-          reject,
-          retryCount: 0,
-          maxRetries: CONFIG.REQUEST_MAX_RETRIES,
-          queuedAt: Date.now(),
-        });
-      });
+      const pendingCount = pendingRequestsRef.current.size;
+      if (pendingCount > 0 && BRIDGE_ENABLE_LOGS) {
+        console.log(
+          `[Bridge] Preserving ${pendingCount} pending requests for retry after reconnect`,
+        );
+      }
+      pendingRequestsRef.current.forEach(
+        ({ resolve, reject, timeout, timeoutDuration, key, payload }, id) => {
+          clearTimeout(timeout);
+          // Queue for retry (will be sent when reconnected)
+          requestQueueRef.current.push({
+            id,
+            key,
+            payload, // Preserve the original payload for retry
+            timeoutDuration,
+            resolve,
+            reject,
+            retryCount: 0,
+            maxRetries: CONFIG.REQUEST_MAX_RETRIES,
+            queuedAt: Date.now(),
+          });
+          if (BRIDGE_ENABLE_LOGS) {
+            console.log(`[Bridge] Queued pending request for retry: ${key}`);
+          }
+        },
+      );
       pendingRequestsRef.current.clear();
     } else {
       // Hard cleanup - reject all pending
@@ -1076,7 +1288,16 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
 
     // Handle broadcasts
     if (message.type === 'broadcast' && message.key) {
-      eventListenersRef.current.get(message.key)?.forEach((handler) => {
+      const listeners = eventListenersRef.current.get(message.key);
+      const listenerCount = listeners?.size ?? 0;
+
+      if (BRIDGE_ENABLE_LOGS) {
+        console.log(
+          `[Bridge] 📡 Received broadcast: ${message.key}, dispatching to ${listenerCount} listeners`,
+        );
+      }
+
+      listeners?.forEach((handler) => {
         try {
           handler(message.payload);
         } catch (err) {
@@ -1152,6 +1373,9 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       bridgeRef
         .current!.send(request.key, request.payload, request.timeoutDuration - queuedDuration)
         .then((data) => {
+          if (BRIDGE_ENABLE_LOGS) {
+            console.log(`[Bridge] ✅ Queued request succeeded: ${request.key}`);
+          }
           if (request.idempotencyKey) {
             activeIdempotencyKeysRef.current.delete(request.idempotencyKey);
           }
@@ -1184,6 +1408,12 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
           }
 
           // Max retries exceeded - give up
+          if (BRIDGE_ENABLE_LOGS) {
+            console.error(
+              `[Bridge] ❌ Queued request failed after ${request.maxRetries} retries: ${request.key}`,
+              error,
+            );
+          }
           if (request.idempotencyKey) {
             activeIdempotencyKeysRef.current.delete(request.idempotencyKey);
           }
@@ -1436,13 +1666,184 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       consecutiveTimeoutsRef.current = 0;
       isConnectingRef.current = false;
 
-      // Drain queued requests after successful connection
-      // Small delay to let the SW fully initialize handlers
-      setTimeout(() => {
-        if (isMountedRef.current && isConnectedRef.current) {
-          drainRequestQueue();
+      if (BRIDGE_ENABLE_LOGS) {
+        const queueSize = requestQueueRef.current.length;
+        const pendingSize = pendingRequestsRef.current.size;
+        console.log(`[Bridge] ✅ PORT CONNECTED | Queued: ${queueSize} | Pending: ${pendingSize}`);
+      }
+
+      // Verify the connection actually works with a ping before proceeding
+      // This catches the case where the port appears connected but the SW isn't responding
+      // We capture the port reference to detect if it changed (e.g., React Strict Mode remount)
+      const verifyConnection = (targetPort: chrome.runtime.Port): Promise<boolean> => {
+        const VERIFY_PING_TIMEOUT = 8000; // 8s per attempt (SW can be slow during bootstrap)
+        const MAX_VERIFY_RETRIES = 3; // Fewer retries to reduce total time
+        const VERIFY_RETRY_DELAY = 2000; // Longer delay between retries to give SW more time
+
+        const attemptVerify = (attempt: number): Promise<boolean> => {
+          // Abort if this port is no longer the current port (e.g., component remounted)
+          if (portRef.current !== targetPort) {
+            if (BRIDGE_ENABLE_LOGS) {
+              console.log(`[Bridge] Verification aborted - port changed (attempt ${attempt})`);
+            }
+            return Promise.resolve(false);
+          }
+
+          if (attempt > MAX_VERIFY_RETRIES) {
+            return Promise.resolve(false);
+          }
+
+          if (BRIDGE_ENABLE_LOGS) {
+            console.log(
+              `[Bridge] Verifying connection (attempt ${attempt}/${MAX_VERIFY_RETRIES})...`,
+            );
+          }
+
+          // Use direct port message instead of bridgeInstance.ping() to avoid queue issues
+          const pingId = `verify_${Date.now()}_${attempt}`;
+          return new Promise<boolean>((resolve) => {
+            // Abort check before setting up timeout
+            if (portRef.current !== targetPort) {
+              resolve(false);
+              return;
+            }
+
+            const timeout = setTimeout(() => {
+              pendingRequestsRef.current.delete(pingId);
+              // Abort if port changed during timeout
+              if (portRef.current !== targetPort) {
+                resolve(false);
+                return;
+              }
+              // Retry on timeout
+              if (BRIDGE_ENABLE_LOGS) {
+                console.warn(`[Bridge] Verification ping timeout (attempt ${attempt})`);
+              }
+              setTimeout(() => {
+                attemptVerify(attempt + 1).then(resolve);
+              }, VERIFY_RETRY_DELAY);
+            }, VERIFY_PING_TIMEOUT);
+
+            pendingRequestsRef.current.set(pingId, {
+              resolve: () => {
+                clearTimeout(timeout);
+                // Only report success if this is still the current port
+                if (portRef.current !== targetPort) {
+                  resolve(false);
+                  return;
+                }
+                if (BRIDGE_ENABLE_LOGS) {
+                  console.log('[Bridge] ✅ VERIFIED - SW is responding');
+                }
+                resolve(true);
+              },
+              reject: () => {
+                clearTimeout(timeout);
+                // Abort if port changed
+                if (portRef.current !== targetPort) {
+                  resolve(false);
+                  return;
+                }
+                // Retry on error
+                if (BRIDGE_ENABLE_LOGS) {
+                  console.warn(`[Bridge] Verification ping error (attempt ${attempt})`);
+                }
+                setTimeout(() => {
+                  attemptVerify(attempt + 1).then(resolve);
+                }, VERIFY_RETRY_DELAY);
+              },
+              timeout,
+              timeoutDuration: VERIFY_PING_TIMEOUT,
+              key: '__ping__',
+              payload: undefined,
+            });
+
+            try {
+              targetPort.postMessage({ id: pingId, key: '__ping__', payload: undefined });
+            } catch (e) {
+              clearTimeout(timeout);
+              pendingRequestsRef.current.delete(pingId);
+              // Abort if port changed
+              if (portRef.current !== targetPort) {
+                resolve(false);
+                return;
+              }
+              if (BRIDGE_ENABLE_LOGS) {
+                console.warn(`[Bridge] Verification postMessage error (attempt ${attempt}):`, e);
+              }
+              // Retry on postMessage error
+              setTimeout(() => {
+                attemptVerify(attempt + 1).then(resolve);
+              }, VERIFY_RETRY_DELAY);
+            }
+          });
+        };
+
+        return attemptVerify(1);
+      };
+
+      // Verify connection before draining queue (using .then() to keep connect() synchronous)
+      // Add initial delay to give SW time to bootstrap its message handlers after port connects
+      const startVerification = () => {
+        if (BRIDGE_ENABLE_LOGS) {
+          console.log('[Bridge] Starting verification after initial delay...');
         }
-      }, 200);
+        verifyConnection(port).then((verified) => {
+          // Abort if port changed or component unmounted
+          if (!isMountedRef.current || portRef.current !== port) {
+            if (BRIDGE_ENABLE_LOGS) {
+              console.log('[Bridge] Verification callback aborted - context changed');
+            }
+            return;
+          }
+
+          if (!verified) {
+            if (BRIDGE_ENABLE_LOGS) {
+              console.error('[Bridge] ❌ Connection verification failed - SW not responding');
+            }
+            // Connection appears broken - trigger reconnection
+            isConnectingRef.current = false;
+            isReconnectingRef.current = true;
+            scheduleSwRestartReconnect(connect);
+            return;
+          }
+
+          if (BRIDGE_ENABLE_LOGS) {
+            const queueSize = requestQueueRef.current.length;
+            console.log(
+              `[Bridge] ✅ RECONNECTED SUCCESSFULLY | Queue: ${queueSize} requests to drain`,
+            );
+          }
+
+          // Drain queued requests after verified connection
+          // Small delay to let the SW fully initialize handlers
+          setTimeout(() => {
+            if (isMountedRef.current && isConnectedRef.current) {
+              drainRequestQueue();
+            }
+          }, 200);
+
+          // Emit bridge:connected event for stores to re-initialize
+          // Only emit AFTER verification succeeds (moved from outside .then())
+          if (BRIDGE_ENABLE_LOGS) {
+            console.log('[Bridge] Emitting bridge:connected event to stores');
+          }
+          eventListenersRef.current.get('bridge:connected')?.forEach((handler) => {
+            try {
+              handler({ timestamp: Date.now() });
+            } catch (err) {
+              if (BRIDGE_ENABLE_LOGS) {
+                console.warn('[Bridge] bridge:connected handler error:', err);
+              }
+            }
+          });
+        });
+      };
+
+      // Start verification after a short delay to give SW time to register handlers
+      // This is especially important after SW restart where bootstrap is still in progress
+      // Increased to 2s to allow SW to fully initialize before we start pinging
+      setTimeout(startVerification, 2000);
 
       // Start grace period - give SW time to fully initialize handlers
       // This prevents "Bridge reconnecting due to timeouts" right after connection
@@ -1454,18 +1855,6 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
           console.log('[Bridge] Grace period ended, timeout monitoring active');
         }
       }, 10000); // 10 second grace period (increased for slow environments)
-
-      // Emit bridge:connected event for stores to re-initialize
-      // This is dispatched directly to local listeners (not over the port)
-      eventListenersRef.current.get('bridge:connected')?.forEach((handler) => {
-        try {
-          handler({ timestamp: Date.now() });
-        } catch (err) {
-          if (BRIDGE_ENABLE_LOGS) {
-            console.warn('[Bridge] bridge:connected handler error:', err);
-          }
-        }
-      });
 
       // Helper to reject pending requests with short timeouts (used by health monitor)
       // Only rejects short-timeout requests - long-timeout requests are intentional slow operations

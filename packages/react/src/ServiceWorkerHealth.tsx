@@ -154,7 +154,7 @@ function broadcastHealthChange(status: HealthStatus, isHealthy: boolean): void {
 const ServiceWorkerHealthContext = createContext<ServiceWorkerHealthContextValue | null>(null);
 
 // Grace period configuration - don't surface unhealthy status immediately
-const HEALTH_GRACE_PERIOD_MS = 3000;
+const HEALTH_GRACE_PERIOD_MS = 1000; // Reduced from 3s for faster feedback
 
 // ============================================================================
 // Provider
@@ -202,7 +202,7 @@ export const ServiceWorkerHealthProvider: FC<ServiceWorkerHealthProviderProps> =
         clearTimeout(graceTimeoutRef.current);
         graceTimeoutRef.current = null;
       }
-    } else if (rawStatus !== 'healthy' && !unhealthyStartedAt) {
+    } else if (!unhealthyStartedAt) {
       // Just became unhealthy - start grace period
       setUnhealthyStartedAt(Date.now());
       graceTimeoutRef.current = setTimeout(() => {

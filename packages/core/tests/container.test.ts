@@ -1,10 +1,10 @@
 import { container } from '../src/di/Container';
 import { describe, it, expect } from 'vitest';
-import { injectable, decorate } from 'inversify';
+import { injectable } from '@inversifyjs/core';
 
+@injectable()
 class Foo {}
-// Apply @injectable() decorator before binding
-decorate(injectable(), Foo);
+
 container.bind(Foo).toSelf();
 
 describe('container singleton', () => {

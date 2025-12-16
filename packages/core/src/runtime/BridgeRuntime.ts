@@ -1,6 +1,8 @@
 import type { Container } from '@inversifyjs/container';
 import { MiddlewareFn, MiddlewareRegistry } from '../internal/MiddlewareRegistry';
 import { DEFAULT_PORT_NAME } from '../internal/constants';
+import { getNonceService, type CriticalPayload } from '../services/NonceService';
+import { claimEarlyPorts, isEarlyListenerSetup } from './EarlyListener';
 
 const DIRECT_MESSAGE_FLAG = '__CHROMA_BRIDGE_DIRECT_MESSAGE__' as const;
 
@@ -153,10 +155,14 @@ class BridgeRuntimeManager {
   }
 
   /**
-   * Setup Chrome runtime port listener
+   * Setup Chrome runtime port listener.
+   *
+   * If early listener was set up (via setupEarlyListener), this will claim
+   * any ports captured during bootstrap and wire them up.
    */
   private setupPortListener(): void {
-    chrome.runtime.onConnect.addListener((port) => {
+    // Handler for incoming port connections
+    const handlePort = (port: chrome.runtime.Port) => {
       try {
         if (!this.isValidPort(port)) {
           return;
@@ -177,7 +183,22 @@ class BridgeRuntimeManager {
           chrome.runtime.lastError;
         }
       }
-    });
+    };
+
+    // Check if early listener was set up - if so, claim captured ports
+    if (isEarlyListenerSetup()) {
+      const earlyPorts = claimEarlyPorts(handlePort);
+      if (earlyPorts.length > 0) {
+        this.logger.info(
+          `📡 Processing ${earlyPorts.length} early port(s) captured during bootstrap`,
+        );
+        earlyPorts.forEach(handlePort);
+      }
+      // Future connections will go through handlePort via claimEarlyPorts callback
+    } else {
+      // No early listener - set up our own listener (backwards compatible)
+      chrome.runtime.onConnect.addListener(handlePort);
+    }
   }
 
   private setupDirectMessageListener(): void {
@@ -324,7 +345,7 @@ class BridgeRuntimeManager {
           hasPayload: !!request.payload,
         });
 
-        const response = await this.processMessage(context);
+        const response = await this.processMessage(context, port);
         this.sendResponse(port, response);
       } catch (error) {
         // Only send error response for regular requests, not broadcasts
@@ -377,7 +398,10 @@ class BridgeRuntimeManager {
   /**
    * Process message through middleware pipeline and handler
    */
-  private async processMessage(context: PipelineContext): Promise<BridgeResponse> {
+  private async processMessage(
+    context: PipelineContext,
+    senderPort?: chrome.runtime.Port,
+  ): Promise<BridgeResponse> {
     const { request } = context;
 
     // Handle internal ping message for health checks
@@ -399,6 +423,66 @@ class BridgeRuntimeManager {
 
     this.logger.debug(`Processing message: ${request.key} (id: ${request.id})`);
 
+    // Check if this is a critical operation with nonce
+    const nonceService = getNonceService();
+    const isCritical = nonceService.isCriticalPayload(request.payload);
+    let nonce: string | undefined;
+    let actualPayload = request.payload;
+
+    if (isCritical) {
+      const criticalPayload = request.payload as CriticalPayload;
+      nonce = criticalPayload.__nonce__;
+      actualPayload = criticalPayload.data;
+
+      this.logger.debug(`Critical operation detected: ${request.key} (nonce: ${nonce})`);
+
+      // Check for duplicate nonce
+      const nonceCheck = await nonceService.checkNonce(nonce);
+      if (nonceCheck.exists) {
+        this.logger.debug(`Duplicate nonce detected: ${nonce} (status: ${nonceCheck.status})`);
+
+        if (nonceCheck.status === 'completed') {
+          // Return cached successful result
+          return {
+            id: request.id,
+            data: nonceCheck.result,
+            timestamp: Date.now(),
+          };
+        } else if (nonceCheck.status === 'failed') {
+          // Return cached error
+          return {
+            id: request.id,
+            error: nonceCheck.error || 'Operation previously failed',
+            timestamp: Date.now(),
+          };
+        } else if (nonceCheck.status === 'pending') {
+          // Operation is still in progress - reject duplicate
+          return {
+            id: request.id,
+            error: 'Operation already in progress',
+            timestamp: Date.now(),
+          };
+        }
+      }
+
+      // Mark as pending before processing
+      await nonceService.markPending(nonce, criticalPayload.__timestamp__);
+
+      // Send acknowledgment to UI immediately (before processing)
+      if (senderPort) {
+        try {
+          senderPort.postMessage({
+            type: 'broadcast',
+            key: `__ack__:${nonce}`,
+            payload: { received: true, timestamp: Date.now() },
+          });
+          this.logger.debug(`Sent acknowledgment for nonce: ${nonce}`);
+        } catch (e) {
+          this.logger.warn(`Failed to send acknowledgment for nonce: ${nonce} - ${e}`);
+        }
+      }
+    }
+
     const handler = this.resolveHandler(request.key);
     const middlewares = MiddlewareRegistry.pipeline(request.key);
 
@@ -406,20 +490,43 @@ class BridgeRuntimeManager {
       `Running pipeline for: ${request.key} with ${middlewares.length} middlewares`,
     );
 
-    const data = await this.runPipeline(middlewares, context, async () => {
-      this.logger.debug(`Executing handler for: ${request.key}`);
-      const result = await handler.handle(request.payload);
-      this.logger.debug(`Handler completed for: ${request.key}`, { resultType: typeof result });
-      return result;
-    });
+    // Create modified context with unwrapped payload for critical ops
+    const handlerContext = isCritical
+      ? { ...context, request: { ...request, payload: actualPayload } }
+      : context;
 
-    this.logger.debug(`Message processed: ${request.key} (id: ${request.id})`);
+    try {
+      const data = await this.runPipeline(middlewares, handlerContext, async () => {
+        this.logger.debug(`Executing handler for: ${request.key}`);
+        const result = await handler.handle(actualPayload);
+        this.logger.debug(`Handler completed for: ${request.key}`, { resultType: typeof result });
+        return result;
+      });
 
-    return {
-      id: request.id,
-      data,
-      timestamp: Date.now(),
-    };
+      // Store successful result for critical operations
+      if (isCritical && nonce) {
+        await nonceService.storeResult(nonce, data);
+        this.logger.debug(`Stored result for nonce: ${nonce}`);
+      }
+
+      this.logger.debug(`Message processed: ${request.key} (id: ${request.id})`);
+
+      return {
+        id: request.id,
+        data,
+        timestamp: Date.now(),
+      };
+    } catch (error) {
+      // Store error for critical operations
+      if (isCritical && nonce) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        await nonceService.storeError(nonce, errorMessage);
+        this.logger.debug(`Stored error for nonce: ${nonce}`);
+      }
+
+      // Re-throw to be handled by caller
+      throw error;
+    }
   }
 
   /**

@@ -50,10 +50,15 @@ export class BridgeStore<T> implements CentralStore<T> {
 
   // Debounce timer for state sync (optimization for rapid updates)
   private stateSyncDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly stateSyncDebounceMs: number = 100; // Increased to 100ms to reduce burst traffic on Windows
+  private readonly stateSyncDebounceMs: number = 50; // Reduced to 50ms for faster reactivity
 
   // Reconnect delay timer (to allow SW to bootstrap before re-initializing)
   private reconnectDelayTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Visibility change handling - refresh state when tab becomes visible
+  private visibilityHandler: (() => void) | null = null;
+  private lastVisibleAt: number = Date.now();
+  private readonly staleThresholdMs: number = 30000; // Consider state stale after 30s hidden
 
   constructor(
     bridge: BridgeWithEvents,
@@ -74,6 +79,9 @@ export class BridgeStore<T> implements CentralStore<T> {
     // Listen for bridge reconnection to re-initialize
     this.setupReconnectListener();
 
+    // Listen for visibility changes to refresh stale state
+    this.setupVisibilityListener();
+
     // Initialize the store (will retry if bridge not ready)
     this.initialize();
   }
@@ -88,15 +96,29 @@ export class BridgeStore<T> implements CentralStore<T> {
           );
         }
         this.ready = false;
+
+        // Clear any pending state sync to prevent stale updates on reconnection
+        if (this.stateSyncDebounceTimer) {
+          clearTimeout(this.stateSyncDebounceTimer);
+          this.stateSyncDebounceTimer = null;
+        }
+        this.pendingStateSync = false;
+
+        // Reset initialization state so we can re-initialize cleanly
+        this.isInitializing = false;
+        if (this.initializationTimer) {
+          clearTimeout(this.initializationTimer);
+          this.initializationTimer = null;
+        }
         // Note: We don't notify readyCallbacks here - they're for "became ready" events
       };
       this.bridge.on('bridge:disconnected', this.disconnectHandler);
 
-      // Listen for reconnection to re-initialize
+      // Listen for reconnection to re-initialize AND re-register listeners
       this.reconnectHandler = () => {
         if (STORE_ENABLE_LOGS) {
           console.log(
-            `BridgeStore[${this.storeName}]: Bridge reconnected, waiting for SW to initialize...`,
+            `BridgeStore[${this.storeName}]: Bridge reconnected, re-registering listeners and re-initializing...`,
           );
         }
         // Clear any pending reconnect delay timer to prevent double-init
@@ -104,21 +126,69 @@ export class BridgeStore<T> implements CentralStore<T> {
           clearTimeout(this.reconnectDelayTimer);
           this.reconnectDelayTimer = null;
         }
-        // Add a delay to allow SW to fully bootstrap its handlers
-        // This prevents "No handler found" errors after SW restart
-        // Increased to 1500ms for Windows where SW startup is slower
-        this.reconnectDelayTimer = setTimeout(() => {
-          this.reconnectDelayTimer = null;
-          if (STORE_ENABLE_LOGS) {
-            console.log(
-              `BridgeStore[${this.storeName}]: Re-initializing after SW startup delay...`,
-            );
-          }
-          this.forceInitialize();
-        }, 1500);
+
+        // CRITICAL: Re-register all event listeners on the new bridge
+        // React StrictMode can cause BridgeProvider to unmount/remount, creating a new eventListenersRef
+        // Since BridgeStore is cached (singleton), we must re-register our handlers
+        this.reregisterEventListeners();
+
+        // Re-initialize immediately - the bridge has already verified the connection with ping
+        // No need to delay since BridgeProvider only emits bridge:connected after verification
+        this.forceInitialize();
       };
       this.bridge.on('bridge:connected', this.reconnectHandler);
     }
+  }
+
+  /**
+   * Re-register all event listeners on the bridge
+   * Called after reconnection because React StrictMode may have created a new eventListenersRef
+   */
+  private reregisterEventListeners() {
+    if (!this.bridge.on) return;
+
+    const eventKey = `store:${this.storeName}:stateChanged`;
+
+    // Re-register the stateChanged handler if we have one
+    if (this.stateChangedHandler) {
+      if (STORE_ENABLE_LOGS) {
+        console.log(`BridgeStore[${this.storeName}]: Re-registering listener for '${eventKey}'`);
+      }
+      this.bridge.on(eventKey, this.stateChangedHandler);
+    }
+
+    // Re-register disconnect/reconnect handlers
+    if (this.disconnectHandler) {
+      this.bridge.on('bridge:disconnected', this.disconnectHandler);
+    }
+    if (this.reconnectHandler) {
+      this.bridge.on('bridge:connected', this.reconnectHandler);
+    }
+  }
+
+  private setupVisibilityListener() {
+    if (typeof document === 'undefined') return;
+
+    this.visibilityHandler = () => {
+      if (document.visibilityState === 'visible') {
+        const hiddenDuration = Date.now() - this.lastVisibleAt;
+
+        // If tab was hidden for longer than threshold, refresh state from SW
+        // This handles the case where SW restarted while tab was in background
+        if (hiddenDuration > this.staleThresholdMs && this.ready && this.bridge.isConnected) {
+          if (STORE_ENABLE_LOGS) {
+            console.log(
+              `BridgeStore[${this.storeName}]: Tab visible after ${Math.round(hiddenDuration / 1000)}s, refreshing state`,
+            );
+          }
+          this.fetchAndApplyState();
+        }
+
+        this.lastVisibleAt = Date.now();
+      }
+    };
+
+    document.addEventListener('visibilitychange', this.visibilityHandler);
   }
 
   public initialize = async () => {
@@ -224,6 +294,12 @@ export class BridgeStore<T> implements CentralStore<T> {
       return;
     }
 
+    if (STORE_ENABLE_LOGS) {
+      console.log(
+        `BridgeStore[${this.storeName}]: 📦 Applying broadcast state, notifying ${this.listeners?.size ?? 0} listeners`,
+      );
+    }
+
     this.previousState = this.currentState;
     this.currentState = newState;
     this.notifyListeners();
@@ -267,6 +343,13 @@ export class BridgeStore<T> implements CentralStore<T> {
     if (this.bridge.on) {
       // Handler receives the full state in the broadcast payload - no need to re-fetch!
       this.stateChangedHandler = (payload: unknown) => {
+        if (STORE_ENABLE_LOGS) {
+          console.log(`BridgeStore[${this.storeName}]: 📡 Received stateChanged broadcast`, {
+            hasPayload: !!payload,
+            payloadType: typeof payload,
+          });
+        }
+
         // Debounce rapid state change events to reduce re-renders
         if (this.stateSyncDebounceTimer) {
           clearTimeout(this.stateSyncDebounceTimer);
@@ -284,7 +367,12 @@ export class BridgeStore<T> implements CentralStore<T> {
           }
         }, this.stateSyncDebounceMs);
       };
-      this.bridge.on(`store:${this.storeName}:stateChanged`, this.stateChangedHandler);
+
+      const eventKey = `store:${this.storeName}:stateChanged`;
+      if (STORE_ENABLE_LOGS) {
+        console.log(`BridgeStore[${this.storeName}]: Registering listener for '${eventKey}'`);
+      }
+      this.bridge.on(eventKey, this.stateChangedHandler);
     } else {
       if (STORE_ENABLE_LOGS) {
         console.warn(`BridgeStore[${this.storeName}]: Bridge does not support event listening`);
@@ -434,6 +522,12 @@ export class BridgeStore<T> implements CentralStore<T> {
       }
     }
 
+    // Remove visibility listener
+    if (this.visibilityHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+      this.visibilityHandler = null;
+    }
+
     if (this.listeners) {
       this.listeners.clear();
     }
@@ -549,6 +643,28 @@ export class BridgeStore<T> implements CentralStore<T> {
       maxInitializationAttempts: this.maxInitializationAttempts,
     };
   };
+
+  /**
+   * Update the bridge reference and re-register all event listeners.
+   * Called when createBridgeStore receives a new bridge object (e.g., after React remount).
+   * This is critical for React StrictMode which causes double-mounting.
+   */
+  public updateBridge = (newBridge: BridgeWithEvents): void => {
+    if (this.bridge === newBridge) {
+      return; // Same bridge, nothing to do
+    }
+
+    if (STORE_ENABLE_LOGS) {
+      console.log(
+        `BridgeStore[${this.storeName}]: Updating bridge reference and re-registering listeners`,
+      );
+    }
+
+    this.bridge = newBridge;
+
+    // Re-register all event listeners on the new bridge
+    this.reregisterEventListeners();
+  };
 }
 
 // Store instance cache - prevents multiple instances per store name (React Strict Mode fix)
@@ -567,6 +683,12 @@ export function createBridgeStore<T>(
     if (STORE_ENABLE_LOGS) {
       console.log(`BridgeStore[${storeName}]: Returning cached instance (singleton)`);
     }
+
+    // CRITICAL: Update bridge reference and re-register listeners!
+    // React StrictMode causes BridgeProvider to remount, creating a new bridge object
+    // with a new eventListenersRef. We must update our reference and re-register.
+    cached.updateBridge(bridge);
+
     // Add any new ready callbacks to the existing instance
     readyCallbacks.forEach((cb) => cached.onReady(cb));
     return cached as unknown as CentralStore<T>;
