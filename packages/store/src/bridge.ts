@@ -143,6 +143,7 @@ export class BridgeStore<T> implements CentralStore<T> {
   /**
    * Re-register all event listeners on the bridge
    * Called after reconnection because React StrictMode may have created a new eventListenersRef
+   * IMPORTANT: Remove existing listeners first to prevent duplicate handlers
    */
   private reregisterEventListeners() {
     if (!this.bridge.on) return;
@@ -150,18 +151,28 @@ export class BridgeStore<T> implements CentralStore<T> {
     const eventKey = `store:${this.storeName}:stateChanged`;
 
     // Re-register the stateChanged handler if we have one
+    // First remove to prevent duplicates, then re-add
     if (this.stateChangedHandler) {
+      if (this.bridge.off) {
+        this.bridge.off(eventKey, this.stateChangedHandler);
+      }
       if (STORE_ENABLE_LOGS) {
         console.log(`BridgeStore[${this.storeName}]: Re-registering listener for '${eventKey}'`);
       }
       this.bridge.on(eventKey, this.stateChangedHandler);
     }
 
-    // Re-register disconnect/reconnect handlers
+    // Re-register disconnect/reconnect handlers (remove first to prevent duplicates)
     if (this.disconnectHandler) {
+      if (this.bridge.off) {
+        this.bridge.off('bridge:disconnected', this.disconnectHandler);
+      }
       this.bridge.on('bridge:disconnected', this.disconnectHandler);
     }
     if (this.reconnectHandler) {
+      if (this.bridge.off) {
+        this.bridge.off('bridge:connected', this.reconnectHandler);
+      }
       this.bridge.on('bridge:connected', this.reconnectHandler);
     }
   }
@@ -707,4 +718,20 @@ export function createBridgeStore<T>(
 // Helper to clear the store cache (useful for testing)
 export function clearStoreCache(): void {
   storeCache.clear();
+}
+
+/**
+ * Destroy a specific store and remove it from cache.
+ * Call this when a store is no longer needed to free memory.
+ * @param storeName - The name of the store to destroy
+ */
+export function destroyStore(storeName: string): void {
+  const store = storeCache.get(storeName);
+  if (store) {
+    if (STORE_ENABLE_LOGS) {
+      console.log(`BridgeStore[${storeName}]: Destroying store and removing from cache`);
+    }
+    store.destroy();
+    storeCache.delete(storeName);
+  }
 }

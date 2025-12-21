@@ -1971,6 +1971,15 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
     return () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       clearTimeoutSafe(maxRetryCooldownRef);
+      clearTimeoutSafe(queueDrainTimeoutRef);
+
+      // Clear all refs to prevent memory leaks on unmount
+      eventListenersRef.current.clear();
+      activeIdempotencyKeysRef.current.clear();
+      requestQueueRef.current = [];
+      pendingRequestsRef.current.forEach(({ timeout }) => clearTimeout(timeout));
+      pendingRequestsRef.current.clear();
+
       cleanup(false); // Don't emit disconnect on unmount - component is being destroyed
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
