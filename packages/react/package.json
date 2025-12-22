@@ -1,6 +1,6 @@
 {
   "name": "@chromahq/react",
-  "version": "1.0.49",
+  "version": "1.0.50",
   "description": "React bindings for the Chroma Chrome extension framework",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
