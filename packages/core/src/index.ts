@@ -75,3 +75,6 @@ export * from './scheduler/decorators/Every';
 export * from './scheduler/decorators/EverySeconds';
 
 export { create, bootstrap } from './Bootstrap';
+
+export { Scheduler } from './scheduler/services/Scheduler.service';
+export { JobRegistry } from './scheduler/scheduler/JobRegistry';

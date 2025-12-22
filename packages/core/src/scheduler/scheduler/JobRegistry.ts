@@ -54,6 +54,12 @@ export class JobRegistry {
   register(id: string, job: IJob, options: JobOptions) {
     const context = this.createJobContext(id, options);
 
+    // If job starts paused, set initial state to PAUSED
+    if (options.startPaused) {
+      context.state = JobState.PAUSED;
+      context.pausedAt = new Date();
+    }
+
     this.jobs.set(id, {
       job,
       context,
@@ -164,6 +170,25 @@ export class JobRegistry {
       });
     });
     return jobs;
+  }
+
+  /**
+   * Find job IDs that match a class name pattern (case-insensitive).
+   *
+   * @param classNamePattern - Partial or full class name to search for
+   * @returns Array of matching job IDs
+   */
+  findByClassName(classNamePattern: string): string[] {
+    const pattern = classNamePattern.toLowerCase();
+    const matches: string[] = [];
+
+    this.jobs.forEach((_, id) => {
+      if (id.toLowerCase().includes(pattern)) {
+        matches.push(id);
+      }
+    });
+
+    return matches;
   }
 
   private createJobContext(id: string, options: JobOptions): JobContext {

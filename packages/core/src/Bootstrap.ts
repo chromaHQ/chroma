@@ -575,6 +575,14 @@ class ApplicationBootstrap {
 
     this.scheduler = container.get(Scheduler);
 
+    // First pass: bind all job classes to the container
+    const jobEntries: Array<{
+      JobClass: Newable<any>;
+      jobName: string;
+      id: string;
+      options: any;
+    }> = [];
+
     for (const module of Object.values(jobModules)) {
       const JobClass = module?.default;
       if (!JobClass) continue;
@@ -582,18 +590,37 @@ class ApplicationBootstrap {
       try {
         const jobMetadata = Reflect.getMetadata('name', JobClass);
         const jobName = jobMetadata || JobClass.name;
-        container.bind(JobClass).toSelf().inSingletonScope();
 
-        // add to registry
+        // Bind the job class first (before instantiation)
+        if (!container.isBound(JobClass)) {
+          container.bind(JobClass).toSelf().inSingletonScope();
+        }
+
         const id = `${jobName.toLowerCase()}:${JobClass.name.toLowerCase()} ${Math.random().toString(36).substring(2, 15)}`;
         container.bind(id).to(JobClass).inSingletonScope();
 
         const options = Reflect.getMetadata('job:options', JobClass) || {};
 
+        jobEntries.push({ JobClass, jobName, id, options });
+        this.logger.debug(`📦 Bound job: ${jobName}`);
+      } catch (error) {
+        this.logger.error(`❌ Failed to bind job ${JobClass.name}:`, error as any);
+      }
+    }
+
+    // Second pass: instantiate and register all jobs (now all dependencies are bound)
+    for (const { JobClass, jobName, id, options } of jobEntries) {
+      try {
         const instance = container.get<typeof JobClass>(JobClass);
 
         JobRegistry.instance.register(id, instance as unknown as IJob<unknown>, options);
-        this.scheduler.schedule(id, options);
+
+        // Only schedule if not starting paused
+        if (!options.startPaused) {
+          this.scheduler.schedule(id, options);
+        } else {
+          this.logger.info(`⏸️ Job ${jobName} registered but paused (startPaused: true)`);
+        }
 
         this.logger.success(`✅ Registered job: ${jobName}`);
       } catch (error) {
