@@ -6,6 +6,8 @@ import { injectable } from '@inversifyjs/core';
 export interface EverySecondsOptions {
   /** If true, job starts paused and must be resumed manually via Scheduler.resume() */
   startPaused?: boolean;
+  /** Explicit job name (survives minification). Required for production builds. */
+  name?: string;
 }
 
 /**
@@ -14,12 +16,12 @@ export interface EverySecondsOptions {
  * this decorator allows for second-level precision.
  *
  * @param seconds - The interval in seconds between job executions
- * @param options - Optional configuration (startPaused, etc.)
+ * @param options - Optional configuration (startPaused, name, etc.)
  *
  * @example
  * ```typescript
  * // Auto-starting job (default)
- * @EverySeconds(5)
+ * @EverySeconds(5, { name: 'MyJob' })
  * export class MyJob implements IJob {
  *   async handle(context: JobContext) {
  *     console.log('Runs every 5 seconds');
@@ -27,7 +29,7 @@ export interface EverySecondsOptions {
  * }
  *
  * // Paused job that must be manually resumed
- * @EverySeconds(2, { startPaused: true })
+ * @EverySeconds(2, { startPaused: true, name: 'OnDemandJob' })
  * export class OnDemandJob implements IJob {
  *   async handle(context: JobContext) {
  *     console.log('Runs when resumed');
@@ -38,6 +40,11 @@ export interface EverySecondsOptions {
 export function EverySeconds(seconds: number, options?: EverySecondsOptions) {
   return function (constructor: any) {
     injectable()(constructor);
+    // Set explicit name metadata to survive minification
+    if (options?.name) {
+      Reflect.defineMetadata('name', options.name, constructor);
+    }
+
     Reflect.defineMetadata(
       'job:options',
       {
