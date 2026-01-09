@@ -112,7 +112,7 @@ class BridgeRuntimeManager {
   private readonly logger: BridgeLogger;
   private readonly keepAlive: boolean;
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
-  private static readonly KEEP_ALIVE_INTERVAL_MS = 25000;
+  private static readonly KEEP_ALIVE_INTERVAL_MS = 50000; // 50 seconds (increased from 25s to reduce wake-ups)
   private static readonly KEEP_ALIVE_ALARM_NAME = 'chroma-bridge-keep-alive';
   private static readonly KEEP_ALIVE_ALARM_PERIOD_MINUTES = 1;
   private isInitialized = false;
