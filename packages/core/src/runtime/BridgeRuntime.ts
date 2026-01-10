@@ -2,6 +2,7 @@ import type { Container } from '@inversifyjs/container';
 import { MiddlewareFn, MiddlewareRegistry } from '../internal/MiddlewareRegistry';
 import { DEFAULT_PORT_NAME } from '../internal/constants';
 import { getNonceService, type CriticalPayload } from '../services/NonceService';
+import { PopupVisibilityService } from '../services/PopupVisibilityService';
 import { claimEarlyPorts, isEarlyListenerSetup } from './EarlyListener';
 
 const DIRECT_MESSAGE_FLAG = '__CHROMA_BRIDGE_DIRECT_MESSAGE__' as const;
@@ -317,6 +318,9 @@ class BridgeRuntimeManager {
     // Track connected ports for broadcasting
     this.connectedPorts.add(port);
 
+    // Notify PopupVisibilityService that a port connected
+    PopupVisibilityService.instance.onPortConnected();
+
     // Start keep-alive when first port connects
     if (this.keepAlive && this.connectedPorts.size === 1) {
       this.startKeepAlive();
@@ -363,6 +367,9 @@ class BridgeRuntimeManager {
     port.onDisconnect.addListener(() => {
       // Remove from connected ports
       this.connectedPorts.delete(port);
+
+      // Notify PopupVisibilityService that a port disconnected
+      PopupVisibilityService.instance.onPortDisconnected();
 
       const runtimeErrorMessage = chrome.runtime.lastError?.message;
 

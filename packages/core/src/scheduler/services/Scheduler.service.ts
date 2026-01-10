@@ -6,6 +6,7 @@ import { IJob, JobState } from '../core/IJob';
 import { getNextCronDate } from '../support/cron';
 import { container } from '../../di/Container';
 import { Logger } from '../../interfaces/Logger';
+import { PopupVisibilityService } from '../../services/PopupVisibilityService';
 
 export class Scheduler {
   private readonly registry = JobRegistry.instance;
@@ -102,6 +103,7 @@ export class Scheduler {
   private async execute(id: string) {
     const job = this.registry.resolve(id);
     const context = this.registry.getContext(id);
+    const options = this.registry.meta(id);
 
     if (!job || !context) {
       this.logger.debug(`Job ${id} not found or no context`);
@@ -111,6 +113,20 @@ export class Scheduler {
     if (context.isPaused() || context.isStopped()) {
       this.logger.debug(`Job ${id} is paused or stopped, skipping execution`);
       return;
+    }
+
+    // Check if job requires popup to be visible
+    if (options?.requiresPopup) {
+      const isPopupVisible = PopupVisibilityService.instance.isPopupVisible();
+      if (!isPopupVisible) {
+        this.logger.debug(`Job ${id} requires popup but popup is not visible, skipping`);
+
+        // Still reschedule for next occurrence
+        if (options?.cron || options?.recurring) {
+          this.schedule(id, options);
+        }
+        return;
+      }
     }
 
     try {
@@ -126,8 +142,6 @@ export class Scheduler {
       if (!context.isStopped() && !context.isPaused()) {
         this.registry.updateState(id, JobState.COMPLETED);
 
-        const options = this.registry.meta(id);
-
         // Reschedule if it's a recurring job (cron or recurring delay)
         if (options?.cron || options?.recurring) {
           this.registry.updateState(id, JobState.SCHEDULED);
@@ -139,7 +153,6 @@ export class Scheduler {
       context.fail(error as Error);
 
       // Still reschedule recurring jobs even after failure
-      const options = this.registry.meta(id);
       if (options?.cron || options?.recurring) {
         this.logger.info(`Rescheduling failed recurring job ${id}`);
         this.registry.updateState(id, JobState.SCHEDULED);

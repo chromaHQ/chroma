@@ -6,8 +6,15 @@ import { injectable } from '@inversifyjs/core';
 export interface EverySecondsOptions {
   /** If true, job starts paused and must be resumed manually via Scheduler.resume() */
   startPaused?: boolean;
+
   /** Explicit job name (survives minification). Required for production builds. */
   name?: string;
+
+  /**
+   * If true, the job will only execute when the popup (or extension view) is visible.
+   * This reduces unnecessary background activity when the user isn't looking at the extension.
+   */
+  requiresPopup?: boolean;
 }
 
 /**
@@ -16,7 +23,7 @@ export interface EverySecondsOptions {
  * this decorator allows for second-level precision.
  *
  * @param seconds - The interval in seconds between job executions
- * @param options - Optional configuration (startPaused, name, etc.)
+ * @param options - Optional configuration (startPaused, name, requiresPopup, etc.)
  *
  * @example
  * ```typescript
@@ -25,6 +32,14 @@ export interface EverySecondsOptions {
  * export class MyJob implements IJob {
  *   async handle(context: JobContext) {
  *     console.log('Runs every 5 seconds');
+ *   }
+ * }
+ *
+ * // Job that only runs when popup is visible
+ * @EverySeconds(10, { name: 'UiUpdateJob', requiresPopup: true })
+ * export class UiUpdateJob implements IJob {
+ *   async handle(context: JobContext) {
+ *     console.log('Only runs when user is viewing extension');
  *   }
  * }
  *
@@ -51,6 +66,7 @@ export function EverySeconds(seconds: number, options?: EverySecondsOptions) {
         delay: seconds * 1000,
         recurring: true,
         startPaused: options?.startPaused ?? false,
+        requiresPopup: options?.requiresPopup ?? false,
       },
       constructor,
     );

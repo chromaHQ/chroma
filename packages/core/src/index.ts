@@ -60,6 +60,10 @@ export {
   type NonceCheckResult,
 } from './services/NonceService';
 export {
+  PopupVisibilityService,
+  getPopupVisibilityService,
+} from './services/PopupVisibilityService';
+export {
   setupEarlyListener,
   claimEarlyPorts,
   isEarlyListenerSetup,
