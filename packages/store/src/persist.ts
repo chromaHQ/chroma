@@ -53,6 +53,10 @@ export function chromeStoragePersist<S>(
         }
       };
 
+      // Debounce timer for persistence to avoid I/O storms on rapid state changes
+      let persistDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+      const PERSIST_DEBOUNCE_MS = 500;
+
       // Helper to persist state
       const persistState = async (state: S) => {
         if (!chrome?.storage?.local) {
@@ -69,13 +73,21 @@ export function chromeStoragePersist<S>(
         });
       };
 
-      // Set up persistence subscription (only once)
+      // Set up persistence subscription with debouncing (only once)
       const setupPersistence = () => {
         if (persistenceSetup) return;
         persistenceSetup = true;
 
         store.subscribe((state) => {
-          persistState(state);
+          // Debounce persistence writes to avoid I/O storms
+          // This prevents excessive chrome.storage.local.set() calls during rapid state updates
+          if (persistDebounceTimer) {
+            clearTimeout(persistDebounceTimer);
+          }
+          persistDebounceTimer = setTimeout(() => {
+            persistDebounceTimer = null;
+            persistState(state);
+          }, PERSIST_DEBOUNCE_MS);
         });
       };
 
