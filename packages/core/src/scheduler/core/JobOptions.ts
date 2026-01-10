@@ -8,7 +8,7 @@ export interface JobOptions {
   /** Delay in milliseconds before first execution (for delay-based jobs) */
   delay?: number;
 
-  /** Cron expression for scheduling (e.g., '0 */5 * * * *' for every 5 minutes) */
+  /** Cron expression for scheduling (e.g., '0 *​/5 * * * *' for every 5 minutes) */
   cron?: string;
 
   /** Whether the job should persist across service worker restarts */

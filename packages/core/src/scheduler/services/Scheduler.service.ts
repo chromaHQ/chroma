@@ -13,6 +13,7 @@ export class Scheduler {
   private readonly alarm = new AlarmAdapter();
   private readonly timeout = new TimeoutAdapter();
   private readonly logger: Logger;
+  private popupVisibilityUnsubscribe?: () => void;
 
   constructor(logger?: Logger) {
     this.logger = logger || {
@@ -26,12 +27,89 @@ export class Scheduler {
     this.logger.info('Scheduler initialized');
     this.alarm.onTrigger(this.execute.bind(this));
     this.timeout.onTrigger(this.execute.bind(this));
+
+    // Subscribe to popup visibility changes to pause/resume jobs
+    this.setupPopupVisibilityListener();
+  }
+
+  /**
+   * Setup listener for popup visibility changes.
+   * When popup closes, pause all jobs with requiresPopup.
+   * When popup opens, resume those jobs.
+   */
+  private setupPopupVisibilityListener(): void {
+    const visibilityService = PopupVisibilityService.instance;
+
+    this.popupVisibilityUnsubscribe = visibilityService.onVisibilityChange((isVisible) => {
+      if (isVisible) {
+        this.resumePopupDependentJobs();
+      } else {
+        this.pausePopupDependentJobs();
+      }
+    });
+  }
+
+  /**
+   * Pause all jobs that have requiresPopup: true
+   */
+  private pausePopupDependentJobs(): void {
+    const jobs = this.registry.listAll();
+    let pausedCount = 0;
+
+    for (const job of jobs) {
+      if (job.options?.requiresPopup && !this.registry.getContext(job.id)?.isPaused()) {
+        this.logger.debug(`Pausing popup-dependent job: ${job.id}`);
+        this.alarm.cancel(job.id);
+        this.timeout.cancel(job.id);
+        this.registry.pause(job.id);
+        pausedCount++;
+      }
+    }
+
+    if (pausedCount > 0) {
+      this.logger.info(`Paused ${pausedCount} popup-dependent jobs (popup closed)`);
+    }
+  }
+
+  /**
+   * Resume all jobs that have requiresPopup: true
+   */
+  private resumePopupDependentJobs(): void {
+    const jobs = this.registry.listAll();
+    let resumedCount = 0;
+
+    for (const job of jobs) {
+      if (job.options?.requiresPopup && this.registry.getContext(job.id)?.isPaused()) {
+        this.logger.debug(`Resuming popup-dependent job: ${job.id}`);
+        this.registry.resume(job.id);
+        this.schedule(job.id, job.options);
+        resumedCount++;
+      }
+    }
+
+    if (resumedCount > 0) {
+      this.logger.info(`Resumed ${resumedCount} popup-dependent jobs (popup opened)`);
+    }
   }
 
   schedule(id: string, options: JobOptions): void {
     const context = this.registry.getContext(id);
     if (!context || context.isStopped()) {
       return;
+    }
+
+    // Don't schedule jobs that require popup if popup is not visible
+    if (options?.requiresPopup) {
+      const isPopupVisible = PopupVisibilityService.instance.isPopupVisible();
+      if (!isPopupVisible) {
+        this.logger.debug(
+          `Job ${id} requires popup but popup is not visible, pausing instead of scheduling`,
+        );
+        if (!context.isPaused()) {
+          this.registry.pause(id);
+        }
+        return;
+      }
     }
 
     const when = this.getScheduleTime(options);
@@ -115,16 +193,13 @@ export class Scheduler {
       return;
     }
 
-    // Check if job requires popup to be visible
+    // Double-check popup visibility for requiresPopup jobs
+    // (job might have been scheduled right before popup closed)
     if (options?.requiresPopup) {
       const isPopupVisible = PopupVisibilityService.instance.isPopupVisible();
       if (!isPopupVisible) {
-        this.logger.debug(`Job ${id} requires popup but popup is not visible, skipping`);
-
-        // Still reschedule for next occurrence
-        if (options?.cron || options?.recurring) {
-          this.schedule(id, options);
-        }
+        this.logger.debug(`Job ${id} requires popup but popup closed, pausing job`);
+        this.registry.pause(id);
         return;
       }
     }
@@ -187,6 +262,13 @@ export class Scheduler {
    */
   shutdown(): void {
     this.logger.info('Shutting down scheduler...');
+
+    // Unsubscribe from popup visibility changes
+    if (this.popupVisibilityUnsubscribe) {
+      this.popupVisibilityUnsubscribe();
+      this.popupVisibilityUnsubscribe = undefined;
+    }
+
     this.alarm.clear();
     this.timeout.clear();
     this.registry.clear();
