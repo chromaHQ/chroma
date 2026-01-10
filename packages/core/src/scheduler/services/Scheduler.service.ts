@@ -40,7 +40,10 @@ export class Scheduler {
   private setupPopupVisibilityListener(): void {
     const visibilityService = PopupVisibilityService.instance;
 
+    this.logger.info('[Scheduler] Setting up popup visibility listener');
+
     this.popupVisibilityUnsubscribe = visibilityService.onVisibilityChange((isVisible) => {
+      this.logger.info(`[Scheduler] Visibility changed: ${isVisible ? 'visible' : 'hidden'}`);
       if (isVisible) {
         this.resumePopupDependentJobs();
       } else {
@@ -54,20 +57,33 @@ export class Scheduler {
    */
   private pausePopupDependentJobs(): void {
     const jobs = this.registry.listAll();
+    this.logger.info(`[Scheduler] pausePopupDependentJobs called, total jobs: ${jobs.length}`);
+
     let pausedCount = 0;
+    const pausedJobIds: string[] = [];
 
     for (const job of jobs) {
-      if (job.options?.requiresPopup && !this.registry.getContext(job.id)?.isPaused()) {
-        this.logger.debug(`Pausing popup-dependent job: ${job.id}`);
+      const hasRequiresPopup = job.options?.requiresPopup;
+      const isPaused = this.registry.getContext(job.id)?.isPaused();
+      this.logger.debug(
+        `[Scheduler] Job ${job.id}: requiresPopup=${hasRequiresPopup}, isPaused=${isPaused}`,
+      );
+
+      if (hasRequiresPopup && !isPaused) {
         this.alarm.cancel(job.id);
         this.timeout.cancel(job.id);
         this.registry.pause(job.id);
+        pausedJobIds.push(job.id);
         pausedCount++;
       }
     }
 
     if (pausedCount > 0) {
-      this.logger.info(`Paused ${pausedCount} popup-dependent jobs (popup closed)`);
+      this.logger.info(
+        `[Scheduler] Paused ${pausedCount} popup-dependent jobs (popup closed): ${pausedJobIds.join(', ')}`,
+      );
+    } else {
+      this.logger.info(`[Scheduler] No popup-dependent jobs to pause`);
     }
   }
 
@@ -76,19 +92,32 @@ export class Scheduler {
    */
   private resumePopupDependentJobs(): void {
     const jobs = this.registry.listAll();
+    this.logger.info(`[Scheduler] resumePopupDependentJobs called, total jobs: ${jobs.length}`);
+
     let resumedCount = 0;
+    const resumedJobIds: string[] = [];
 
     for (const job of jobs) {
-      if (job.options?.requiresPopup && this.registry.getContext(job.id)?.isPaused()) {
-        this.logger.debug(`Resuming popup-dependent job: ${job.id}`);
+      const hasRequiresPopup = job.options?.requiresPopup;
+      const isPaused = this.registry.getContext(job.id)?.isPaused();
+      this.logger.debug(
+        `[Scheduler] Job ${job.id}: requiresPopup=${hasRequiresPopup}, isPaused=${isPaused}`,
+      );
+
+      if (hasRequiresPopup && isPaused) {
         this.registry.resume(job.id);
         this.schedule(job.id, job.options);
+        resumedJobIds.push(job.id);
         resumedCount++;
       }
     }
 
     if (resumedCount > 0) {
-      this.logger.info(`Resumed ${resumedCount} popup-dependent jobs (popup opened)`);
+      this.logger.info(
+        `[Scheduler] Resumed ${resumedCount} popup-dependent jobs (popup opened): ${resumedJobIds.join(', ')}`,
+      );
+    } else {
+      this.logger.info(`[Scheduler] No popup-dependent jobs to resume`);
     }
   }
 

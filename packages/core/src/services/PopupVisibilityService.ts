@@ -133,9 +133,11 @@ export class PopupVisibilityService {
   onPortConnected(): void {
     const wasVisible = this.isPopupVisible();
     this.connectedPortCount++;
+    console.log(`[PopupVisibilityService] Port connected, count: ${this.connectedPortCount}`);
 
     if (!wasVisible && this.isPopupVisible()) {
       this.lastVisibilityChangeAt = Date.now();
+      console.log('[PopupVisibilityService] Popup became visible, notifying listeners');
       this.notifyListeners(true);
     }
   }
@@ -147,9 +149,11 @@ export class PopupVisibilityService {
   onPortDisconnected(): void {
     const wasVisible = this.isPopupVisible();
     this.connectedPortCount = Math.max(0, this.connectedPortCount - 1);
+    console.log(`[PopupVisibilityService] Port disconnected, count: ${this.connectedPortCount}`);
 
     if (wasVisible && !this.isPopupVisible()) {
       this.lastVisibilityChangeAt = Date.now();
+      console.log('[PopupVisibilityService] Popup became hidden, notifying listeners');
       this.notifyListeners(false);
     }
   }

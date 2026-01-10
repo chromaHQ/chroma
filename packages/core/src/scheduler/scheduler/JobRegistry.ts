@@ -136,7 +136,11 @@ export class JobRegistry {
 
   pause(id: string): void {
     const entry = this.jobs.get(id);
-    if (entry && entry.context.state === JobState.RUNNING) {
+    // Allow pausing from RUNNING or SCHEDULED state
+    if (
+      entry &&
+      (entry.context.state === JobState.RUNNING || entry.context.state === JobState.SCHEDULED)
+    ) {
       this.updateState(id, JobState.PAUSED);
       this.clearTimers(id);
       entry.job.pause?.();
