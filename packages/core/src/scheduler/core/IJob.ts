@@ -3,6 +3,12 @@ import { JobOptions } from './JobOptions';
 export interface IJob<T = unknown> {
   readonly data?: T;
   handle(context?: JobContext): Promise<void> | void;
+  /**
+   * Called once when the app boots, after all dependencies are initialized.
+   * Use for immediate initialization tasks like connecting to sockets.
+   * If the job has `requiresPopup: true`, onBoot will only execute when popup is visible.
+   */
+  onBoot?(): Promise<void> | void;
   pause?(): Promise<void> | void;
   resume?(): Promise<void> | void;
   stop?(): Promise<void> | void;

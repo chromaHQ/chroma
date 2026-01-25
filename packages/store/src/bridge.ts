@@ -307,7 +307,7 @@ export class BridgeStore<T> implements CentralStore<T> {
 
     if (STORE_ENABLE_LOGS) {
       console.log(
-        `BridgeStore[${this.storeName}]: 📦 Applying broadcast state, notifying ${this.listeners?.size ?? 0} listeners`,
+        `BridgeStore[${this.storeName}]: Applying broadcast state, notifying ${this.listeners?.size ?? 0} listeners`,
       );
     }
 
@@ -355,7 +355,7 @@ export class BridgeStore<T> implements CentralStore<T> {
       // Handler receives the full state in the broadcast payload - no need to re-fetch!
       this.stateChangedHandler = (payload: unknown) => {
         if (STORE_ENABLE_LOGS) {
-          console.log(`BridgeStore[${this.storeName}]: 📡 Received stateChanged broadcast`, {
+          console.log(`BridgeStore[${this.storeName}]: Received stateChanged broadcast`, {
             hasPayload: !!payload,
             payloadType: typeof payload,
           });

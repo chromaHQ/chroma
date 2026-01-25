@@ -3,6 +3,7 @@ import { bootstrap as bridgeBootstrap } from './runtime/BridgeRuntime';
 import { JobRegistry, Scheduler } from './scheduler';
 import { IJob } from './scheduler/core/IJob';
 import { Logger } from './interfaces/Logger';
+import { PopupVisibilityService } from './services/PopupVisibilityService';
 
 type Newable<T> = new (...args: any[]) => T;
 
@@ -85,7 +86,7 @@ class ApplicationBootstrap {
   }): Promise<void> {
     try {
       this.logger = new BootstrapLogger(enableLogs);
-      this.logger.info('🚀 Starting Chroma application bootstrap...');
+      this.logger.info('Starting Chroma application bootstrap...');
       await this.discoverAndInitializeStores();
       await this.discoverServices();
 
@@ -114,9 +115,9 @@ class ApplicationBootstrap {
         await this.bootServices();
       }
 
-      this.logger.success('🎉 Chroma application initialization complete!');
+      this.logger.success('Chroma application initialization complete');
     } catch (error) {
-      this.logger.error('💥 Application bootstrap failed:', error as any);
+      this.logger.error('Application bootstrap failed:', error as any);
       throw error;
     }
   }
@@ -124,7 +125,7 @@ class ApplicationBootstrap {
    * Boot all registered services by calling their onBoot method if present
    */
   private async bootServices(): Promise<void> {
-    this.logger.info('🚀 Booting services...');
+    this.logger.info('Booting services...');
 
     const bootPromises = Array.from(this.serviceRegistry.entries()).map(
       async ([serviceName, ServiceClass]) => {
@@ -151,7 +152,7 @@ class ApplicationBootstrap {
    * Discover all services in the application directory
    */
   private async discoverServices(): Promise<void> {
-    this.logger.info('🔍 Discovering services...');
+    this.logger.info('Discovering services...');
 
     const serviceModules = import.meta.glob<{ default?: Newable<any> }>(
       '/src/app/services/**/*.service.{ts,js}',
@@ -173,7 +174,7 @@ class ApplicationBootstrap {
     const circularDepsResult = this.detectCircularDependencies(serviceClasses);
 
     if (circularDepsResult.hasCircularDependencies) {
-      this.logger.error('💥 Circular dependencies detected!');
+      this.logger.error('Circular dependencies detected!');
       circularDepsResult.cycles.forEach((cycle, index) => {
         this.logger.error(`Cycle ${index + 1}: ${cycle.cycle.join(' → ')} → ${cycle.cycle[0]}`);
       });
@@ -183,11 +184,11 @@ class ApplicationBootstrap {
     // Third pass: register services if no circular dependencies
     for (const ServiceClass of serviceClasses) {
       container.bind(ServiceClass).toSelf().inSingletonScope();
-      this.logger.debug(`📦 Discovered service: ${ServiceClass.name}`);
+      this.logger.debug(`Discovered service: ${ServiceClass.name}`);
     }
 
     this.logger.success(
-      `✅ Registered ${serviceClasses.length} services without circular dependencies`,
+      `Registered ${serviceClasses.length} services without circular dependencies`,
     );
   }
 
@@ -360,20 +361,20 @@ class ApplicationBootstrap {
     const serviceClasses = Array.from(this.serviceRegistry.values());
     const result = this.detectCircularDependencies(serviceClasses);
 
-    this.logger.info('📊 Dependency Analysis Report:');
+    this.logger.info('Dependency Analysis Report:');
     this.logger.info(`Total Services: ${result.dependencyGraph.size}`);
 
     if (result.hasCircularDependencies) {
-      this.logger.error(`🔄 Circular Dependencies Found: ${result.cycles.length}`);
+      this.logger.error(`Circular Dependencies Found: ${result.cycles.length}`);
       result.cycles.forEach((cycle, index) => {
         this.logger.error(`  Cycle ${index + 1}: ${cycle.cycle.join(' → ')} → ${cycle.cycle[0]}`);
       });
     } else {
-      this.logger.success('✅ No circular dependencies detected');
+      this.logger.success('No circular dependencies detected');
     }
 
     // Print dependency tree
-    this.logger.info('🌳 Service Dependency Tree:');
+    this.logger.info('Service Dependency Tree:');
     for (const [serviceName, node] of result.dependencyGraph) {
       if (node.dependencies.length > 0) {
         this.logger.info(`  ${serviceName} depends on:`);
@@ -392,7 +393,7 @@ class ApplicationBootstrap {
   private async discoverAndInitializeStores(): Promise<void> {
     try {
       if (this.storeDefinitions.length === 0) {
-        this.logger.debug('📭 No store definitions provided');
+        this.logger.debug('No store definitions provided');
         return;
       }
 
@@ -429,12 +430,12 @@ class ApplicationBootstrap {
           );
         }
 
-        this.logger.debug(`✅ Initialized store: ${store.def.name}`);
+        this.logger.debug(`Initialized store: ${store.def.name}`);
       }
 
-      this.logger.success(`✅ Initialized ${this.storeDefinitions.length} store(s)`);
+      this.logger.success(`Initialized ${this.storeDefinitions.length} store(s)`);
     } catch (error) {
-      this.logger.error('❌ Failed to initialize stores:', error as any);
+      this.logger.error('Failed to initialize stores:', error as any);
     }
   }
 
@@ -442,7 +443,7 @@ class ApplicationBootstrap {
    * Register message handlers
    */
   private async registerMessages(): Promise<void> {
-    this.logger.info('📨 Registering messages...');
+    this.logger.info('Registering messages...');
 
     const messageModules = import.meta.glob<{ default?: Newable<any> }>(
       '/src/app/messages/**/*.message.{ts,js}',
@@ -460,7 +461,7 @@ class ApplicationBootstrap {
     if (messageClasses.length > 0) {
       const circularDepsResult = this.detectCircularDependencies(messageClasses);
       if (circularDepsResult.hasCircularDependencies) {
-        this.logger.error('💥 Circular dependencies detected in messages!');
+        this.logger.error('Circular dependencies detected in messages!');
         circularDepsResult.cycles.forEach((cycle, index) => {
           this.logger.error(
             `Message Cycle ${index + 1}: ${cycle.cycle.join(' → ')} → ${cycle.cycle[0]}`,
@@ -478,12 +479,12 @@ class ApplicationBootstrap {
         // check all service registry is available
         for (const [name, ServiceClass] of this.serviceRegistry) {
           if (!ServiceClass) {
-            this.logger.warn(`⚠️ Service not found in registry: ${name}`);
+            this.logger.warn(`Service not found in registry: ${name}`);
           }
 
           // check if in container
           if (!container.isBound(ServiceClass)) {
-            this.logger.warn(`⚠️ Service not bound in container: ${name}`);
+            this.logger.warn(`Service not bound in container: ${name}`);
           }
         }
 
@@ -491,23 +492,23 @@ class ApplicationBootstrap {
         const messageName = messageMetadata || MessageClass.name;
         container.bind(messageName).to(MessageClass).inSingletonScope();
 
-        this.logger.success(`✅ Registered message: ${messageName}`);
+        this.logger.success(`Registered message: ${messageName}`);
       } catch (error) {
-        this.logger.error(`❌ Failed to register message ${MessageClass.name}:`, error as any);
+        this.logger.error(`Failed to register message ${MessageClass.name}:`, error as any);
       }
     }
   }
 
   private async registerMessageClass(MessageClass: Newable<any>, name: string): Promise<void> {
     container.bind(name).to(MessageClass).inSingletonScope();
-    this.logger.success(`✅ Registered message: ${name}`);
+    this.logger.success(`Registered message: ${name}`);
   }
 
   /**
    * Boot all registered messages
    */
   private async bootMessages(): Promise<void> {
-    this.logger.info('🚀 Booting messages...');
+    this.logger.info('Booting messages...');
 
     const messageModules = import.meta.glob<{ default?: Newable<any> }>(
       '/src/app/messages/**/*.message.{ts,js}',
@@ -527,10 +528,10 @@ class ApplicationBootstrap {
         const messageInstance = container.get<any>(messageName);
 
         await messageInstance.boot();
-        this.logger.success(`✅ Booted message: ${messageName}`);
+        this.logger.success(`Booted message: ${messageName}`);
         return { messageName, success: true };
       } catch (error) {
-        this.logger.error(`❌ Failed to boot message ${MessageClass.name}:`, error as any);
+        this.logger.error(`Failed to boot message ${MessageClass.name}:`, error as any);
         return { messageName: MessageClass.name, success: false, error };
       }
     });
@@ -542,7 +543,7 @@ class ApplicationBootstrap {
    * Register jobs for scheduled execution
    */
   private async registerJobs(): Promise<void> {
-    this.logger.info('🕒 Registering jobs...');
+    this.logger.info('Registering jobs...');
 
     const jobModules = import.meta.glob<{ default?: Newable<any> }>(
       '/src/app/jobs/**/*.job.{ts,js}',
@@ -562,12 +563,12 @@ class ApplicationBootstrap {
     // check all service registry is available
     for (const [name, ServiceClass] of this.serviceRegistry) {
       if (!ServiceClass) {
-        this.logger.warn(`⚠️ Service not found in registry: ${name}`);
+        this.logger.warn(`Service not found in registry: ${name}`);
       }
 
       // check if in container
       if (!container.isBound(ServiceClass)) {
-        this.logger.warn(`⚠️ Service not bound in container: ${name}`);
+        this.logger.warn(`Service not bound in container: ${name}`);
       } else {
         container.get(ServiceClass);
       }
@@ -602,29 +603,52 @@ class ApplicationBootstrap {
         const options = Reflect.getMetadata('job:options', JobClass) || {};
 
         jobEntries.push({ JobClass, jobName, id, options });
-        this.logger.debug(`📦 Bound job: ${jobName}`);
+        this.logger.debug(`Bound job: ${jobName}`);
       } catch (error) {
-        this.logger.error(`❌ Failed to bind job ${JobClass.name}:`, error as any);
+        this.logger.error(`Failed to bind job ${JobClass.name}:`, error as any);
       }
     }
 
     // Second pass: instantiate and register all jobs (now all dependencies are bound)
     for (const { JobClass, jobName, id, options } of jobEntries) {
       try {
-        const instance = container.get<typeof JobClass>(JobClass);
+        const instance = container.get<IJob<unknown>>(JobClass);
 
-        JobRegistry.instance.register(id, instance as unknown as IJob<unknown>, options);
+        JobRegistry.instance.register(id, instance, options);
+
+        // Execute onBoot method if present (similar to services)
+        if (typeof instance.onBoot === 'function') {
+          this.logger.info(`Executing onBoot for job: ${jobName}`);
+          try {
+            // Check if job should run based on popup visibility
+            if (options.requiresPopup) {
+              const isPopupVisible = PopupVisibilityService.instance.isPopupVisible();
+              if (!isPopupVisible) {
+                this.logger.debug(`Skipping onBoot for job ${jobName} - popup not visible`);
+              } else {
+                await instance.onBoot();
+                this.logger.debug(`Executed onBoot for job: ${jobName}`);
+              }
+            } else {
+              await instance.onBoot();
+              this.logger.debug(`Executed onBoot for job: ${jobName}`);
+            }
+          } catch (error) {
+            this.logger.error(`Failed to execute onBoot for job ${jobName}:`, error as any);
+            // Don't throw - onBoot failures shouldn't prevent app startup
+          }
+        }
 
         // Only schedule if not starting paused
         if (!options.startPaused) {
           this.scheduler.schedule(id, options);
         } else {
-          this.logger.info(`⏸️ Job ${jobName} registered but paused (startPaused: true)`);
+          this.logger.info(`Job ${jobName} registered but paused (startPaused: true)`);
         }
 
-        this.logger.success(`✅ Registered job: ${jobName}`);
+        this.logger.success(`Registered job: ${jobName}`);
       } catch (error) {
-        this.logger.error(`❌ Failed to register job ${JobClass.name}:`, error as any);
+        this.logger.error(`Failed to register job ${JobClass.name}:`, error as any);
       }
     }
   }
