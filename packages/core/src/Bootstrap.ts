@@ -4,6 +4,8 @@ import { JobRegistry, Scheduler } from './scheduler';
 import { IJob } from './scheduler/core/IJob';
 import { Logger } from './interfaces/Logger';
 import { PopupVisibilityService } from './services/PopupVisibilityService';
+import { AppEventBus, EventBusToken } from './events/AppEventBus';
+import { getSubscribeMetadata } from './events/Subscribe';
 
 type Newable<T> = new (...args: any[]) => T;
 
@@ -43,6 +45,7 @@ interface CircularDependencyDetectionResult {
 class ApplicationBootstrap {
   private readonly serviceDependencies = new Map<string, ServiceMetadata>();
   private readonly serviceRegistry = new Map<string, Newable<any>>();
+  private readonly jobRegistry = new Map<string, Newable<any>>();
   private logger: Logger = new BootstrapLogger();
   private readonly storeDefinitions: {
     def: any;
@@ -87,6 +90,10 @@ class ApplicationBootstrap {
     try {
       this.logger = new BootstrapLogger(enableLogs);
       this.logger.info('Starting Chroma application bootstrap...');
+
+      // Bind global event bus before service discovery so it can be injected
+      this.initializeEventBus();
+
       await this.discoverAndInitializeStores();
       await this.discoverServices();
 
@@ -113,6 +120,7 @@ class ApplicationBootstrap {
       if (!disableBootMethods) {
         await this.bootMessages();
         await this.bootServices();
+        this.wireEventSubscriptions();
       }
 
       this.logger.success('Chroma application initialization complete');
@@ -146,6 +154,84 @@ class ApplicationBootstrap {
     );
 
     await Promise.all(bootPromises);
+  }
+
+  /**
+   * Create and bind the global AppEventBus singleton to the DI container.
+   * Called early in bootstrap so any service can inject it.
+   */
+  private initializeEventBus(): void {
+    if (!container.isBound(AppEventBus)) {
+      container.bind(AppEventBus).toSelf().inSingletonScope();
+    }
+
+    if (!container.isBound(EventBusToken)) {
+      container
+        .bind(EventBusToken)
+        .toDynamicValue(() => container.get(AppEventBus))
+        .inSingletonScope();
+    }
+
+    this.logger.debug('AppEventBus bound to DI container');
+  }
+
+  /**
+   * Scan all registered services and jobs for @Subscribe metadata and
+   * wire the decorated methods to the AppEventBus.
+   *
+   * This runs after bootServices so every singleton is already instantiated.
+   */
+  private wireEventSubscriptions(): void {
+    this.logger.info('Wiring @Subscribe event subscriptions...');
+
+    const bus = container.get(AppEventBus);
+    let wiredCount = 0;
+
+    // Helper to scan a single class
+    const scan = (name: string, Constructor: Newable<any>) => {
+      const metadata = getSubscribeMetadata(Constructor);
+
+      if (metadata.length === 0) {
+        return;
+      }
+
+      let instance: any;
+
+      try {
+        instance = container.get(Constructor);
+      } catch {
+        this.logger.warn(`Could not resolve instance for ${name}, skipping @Subscribe wiring`);
+        return;
+      }
+
+      for (const { eventName, methodName } of metadata) {
+        const method = instance[methodName];
+
+        if (typeof method !== 'function') {
+          this.logger.warn(
+            `@Subscribe('${eventName}') on ${name}.${methodName} is not a function, skipping`,
+          );
+          continue;
+        }
+
+        bus.on(eventName, method.bind(instance), `${name}.${methodName}`);
+        wiredCount++;
+
+        this.logger.debug(`Wired @Subscribe('${eventName}') → ${name}.${methodName}`);
+      }
+    };
+
+    // Scan all services
+    for (const [name, Constructor] of this.serviceRegistry) {
+      scan(name, Constructor);
+    }
+
+    // Scan all jobs
+    for (const [name, Constructor] of this.jobRegistry) {
+      scan(name, Constructor);
+    }
+
+    this.logger.success(`Wired ${wiredCount} @Subscribe handler(s) to AppEventBus`);
   }
 
   /**
@@ -603,6 +689,7 @@ class ApplicationBootstrap {
         const options = Reflect.getMetadata('job:options', JobClass) || {};
 
         jobEntries.push({ JobClass, jobName, id, options });
+        this.jobRegistry.set(jobName, JobClass);
         this.logger.debug(`Bound job: ${jobName}`);
       } catch (error) {
         this.logger.error(`Failed to bind job ${JobClass.name}:`, error as any);

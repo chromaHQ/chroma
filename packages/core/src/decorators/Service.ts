@@ -6,3 +6,4 @@ export function Service() {
 
 export const Use = (id: symbol | string | NewableFunction) => inject(id);
 export const Store = () => Use(Symbol.for('Store'));
+export const EventBus = () => Use(Symbol.for('EventBus'));

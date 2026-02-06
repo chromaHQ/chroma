@@ -44,8 +44,17 @@
  */
 import 'reflect-metadata';
 
-export { Service, Use, Store } from './decorators/Service';
+export { Service, Use, Store, EventBus } from './decorators/Service';
 export { Message, IMessage } from './decorators/Message';
+
+export {
+  Subscribe,
+  getSubscribeMetadata,
+  SUBSCRIBE_METADATA_KEY,
+  AppEventBus,
+  EventBusToken,
+} from './events';
+export type { SubscribeMetadata, EventHandler } from './events';
 
 export * from './scheduler/core/Job';
 export * from './scheduler/decorators/Delay';
