@@ -683,7 +683,7 @@ class ApplicationBootstrap {
           container.bind(JobClass).toSelf().inSingletonScope();
         }
 
-        const id = `${jobName.toLowerCase()}:${JobClass.name.toLowerCase()} ${Math.random().toString(36).substring(2, 15)}`;
+        const id = `${jobName.toLowerCase()}:${JobClass.name.toLowerCase()}`;
         container.bind(id).to(JobClass).inSingletonScope();
 
         const options = Reflect.getMetadata('job:options', JobClass) || {};

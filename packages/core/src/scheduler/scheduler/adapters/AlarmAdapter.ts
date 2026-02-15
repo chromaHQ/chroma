@@ -16,19 +16,22 @@ export class AlarmAdapter {
   private listenerRegistered = false;
   private triggerCallback?: (id: string) => void;
 
+  /** Resolves when stale alarms from previous SW instances have been cleared */
+  public readonly ready: Promise<void>;
+
   constructor() {
-    this.initializeAlarmListener();
+    this.ready = this.initializeAlarmListener();
   }
 
   /**
    * Initialize the Chrome Alarms listener (once)
    */
-  private initializeAlarmListener = (): void => {
+  private initializeAlarmListener = async (): Promise<void> => {
     if (this.listenerRegistered) return;
 
     if (this.isChromeAlarmsAvailable()) {
-      // Clear any stale alarms from previous SW instances before registering listener
-      this.clearStaleAlarms();
+      // Clear any stale alarms from previous SW instances BEFORE registering listener
+      await this.clearStaleAlarms();
 
       chrome.alarms.onAlarm.addListener(this.handleAlarm);
       this.listenerRegistered = true;
@@ -41,21 +44,32 @@ export class AlarmAdapter {
   };
 
   /**
-   * Clear any stale chroma alarms from previous SW instances
+   * Clear any stale chroma alarms from previous SW instances.
+   * Returns a promise that resolves once all stale alarms are cleared.
    */
-  private clearStaleAlarms = (): void => {
-    if (!this.isChromeAlarmsAvailable()) return;
+  private clearStaleAlarms = (): Promise<void> => {
+    if (!this.isChromeAlarmsAvailable()) return Promise.resolve();
 
-    chrome.alarms.getAll((alarms) => {
-      const staleAlarms = alarms.filter((a) => a.name.startsWith(AlarmAdapter.ALARM_PREFIX));
-      if (staleAlarms.length > 0) {
-        console.log(
-          `[AlarmAdapter] 🧹 Clearing ${staleAlarms.length} stale alarms from previous session`,
-        );
-        staleAlarms.forEach((alarm) => {
-          chrome.alarms.clear(alarm.name);
-        });
-      }
+    return new Promise<void>((resolve) => {
+      chrome.alarms.getAll((alarms) => {
+        const staleAlarms = alarms.filter((a) => a.name.startsWith(AlarmAdapter.ALARM_PREFIX));
+        if (staleAlarms.length > 0) {
+          console.log(
+            `[AlarmAdapter] 🧹 Clearing ${staleAlarms.length} stale alarms from previous session`,
+          );
+          let cleared = 0;
+          staleAlarms.forEach((alarm) => {
+            chrome.alarms.clear(alarm.name, () => {
+              cleared++;
+              if (cleared === staleAlarms.length) {
+                resolve();
+              }
+            });
+          });
+        } else {
+          resolve();
+        }
+      });
     });
   };
 

@@ -141,6 +141,17 @@ export class Scheduler {
       }
     }
 
+    // Wait for AlarmAdapter to finish clearing stale alarms before scheduling
+    // This prevents the race condition where new alarms are created before old ones are cleared
+    this.alarm.ready.then(() => this.scheduleInternal(id, options));
+  }
+
+  private scheduleInternal(id: string, options: JobOptions): void {
+    const context = this.registry.getContext(id);
+    if (!context || context.isStopped() || context.isPaused()) {
+      return;
+    }
+
     const when = this.getScheduleTime(options);
     const now = Date.now();
 
