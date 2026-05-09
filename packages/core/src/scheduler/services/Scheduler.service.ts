@@ -15,6 +15,33 @@ export class Scheduler {
   private readonly logger: Logger;
   private popupVisibilityUnsubscribe?: () => void;
 
+  /**
+   * When `options.schedulerDebug` is true, log at info so diagnostics show without
+   * enabling global debug. Otherwise logs at debug.
+   */
+  private logJobDiagnostics(
+    options: JobOptions | undefined,
+    message: string,
+    context?: Record<string, unknown>,
+  ): void {
+    const ctx = context as Record<string, any> | undefined;
+    if (options?.schedulerDebug) {
+      this.logger.info(message, ctx);
+    } else {
+      this.logger.debug(message, ctx);
+    }
+  }
+
+  /** Batch summary visible at info if any involved job has `schedulerDebug`. */
+  private logBatchIfAnyJobDebug(jobIds: string[], message: string): void {
+    const anyDebug = jobIds.some((jid) => this.registry.meta(jid)?.schedulerDebug);
+    if (anyDebug) {
+      this.logger.info(message);
+    } else {
+      this.logger.debug(message);
+    }
+  }
+
   constructor(logger?: Logger) {
     this.logger = logger || {
       info: console.log,
@@ -24,7 +51,7 @@ export class Scheduler {
       debug: console.debug,
     };
 
-    this.logger.info('Scheduler initialized');
+    this.logger.debug('Scheduler initialized');
     this.alarm.onTrigger(this.execute.bind(this));
     this.timeout.onTrigger(this.execute.bind(this));
 
@@ -40,10 +67,10 @@ export class Scheduler {
   private setupPopupVisibilityListener(): void {
     const visibilityService = PopupVisibilityService.instance;
 
-    this.logger.info('[Scheduler] Setting up popup visibility listener');
+    this.logger.debug('[Scheduler] Setting up popup visibility listener');
 
     this.popupVisibilityUnsubscribe = visibilityService.onVisibilityChange((isVisible) => {
-      this.logger.info(`[Scheduler] Visibility changed: ${isVisible ? 'visible' : 'hidden'}`);
+      this.logger.debug(`[Scheduler] Visibility changed: ${isVisible ? 'visible' : 'hidden'}`);
       if (isVisible) {
         this.resumePopupDependentJobs();
       } else {
@@ -57,7 +84,7 @@ export class Scheduler {
    */
   private pausePopupDependentJobs(): void {
     const jobs = this.registry.listAll();
-    this.logger.info(`[Scheduler] pausePopupDependentJobs called, total jobs: ${jobs.length}`);
+    this.logger.debug(`[Scheduler] pausePopupDependentJobs called, total jobs: ${jobs.length}`);
 
     let pausedCount = 0;
     const pausedJobIds: string[] = [];
@@ -65,7 +92,8 @@ export class Scheduler {
     for (const job of jobs) {
       const hasRequiresPopup = job.options?.requiresPopup;
       const isPaused = this.registry.getContext(job.id)?.isPaused();
-      this.logger.debug(
+      this.logJobDiagnostics(
+        job.options,
         `[Scheduler] Job ${job.id}: requiresPopup=${hasRequiresPopup}, isPaused=${isPaused}`,
       );
 
@@ -79,11 +107,12 @@ export class Scheduler {
     }
 
     if (pausedCount > 0) {
-      this.logger.info(
+      this.logBatchIfAnyJobDebug(
+        pausedJobIds,
         `[Scheduler] Paused ${pausedCount} popup-dependent jobs (popup closed): ${pausedJobIds.join(', ')}`,
       );
     } else {
-      this.logger.info(`[Scheduler] No popup-dependent jobs to pause`);
+      this.logger.debug(`[Scheduler] No popup-dependent jobs to pause`);
     }
   }
 
@@ -92,7 +121,7 @@ export class Scheduler {
    */
   private resumePopupDependentJobs(): void {
     const jobs = this.registry.listAll();
-    this.logger.info(`[Scheduler] resumePopupDependentJobs called, total jobs: ${jobs.length}`);
+    this.logger.debug(`[Scheduler] resumePopupDependentJobs called, total jobs: ${jobs.length}`);
 
     let resumedCount = 0;
     const resumedJobIds: string[] = [];
@@ -100,7 +129,8 @@ export class Scheduler {
     for (const job of jobs) {
       const hasRequiresPopup = job.options?.requiresPopup;
       const isPaused = this.registry.getContext(job.id)?.isPaused();
-      this.logger.debug(
+      this.logJobDiagnostics(
+        job.options,
         `[Scheduler] Job ${job.id}: requiresPopup=${hasRequiresPopup}, isPaused=${isPaused}`,
       );
 
@@ -113,11 +143,12 @@ export class Scheduler {
     }
 
     if (resumedCount > 0) {
-      this.logger.info(
+      this.logBatchIfAnyJobDebug(
+        resumedJobIds,
         `[Scheduler] Resumed ${resumedCount} popup-dependent jobs (popup opened): ${resumedJobIds.join(', ')}`,
       );
     } else {
-      this.logger.info(`[Scheduler] No popup-dependent jobs to resume`);
+      this.logger.debug(`[Scheduler] No popup-dependent jobs to resume`);
     }
   }
 
@@ -131,7 +162,8 @@ export class Scheduler {
     if (options?.requiresPopup) {
       const isPopupVisible = PopupVisibilityService.instance.isPopupVisible();
       if (!isPopupVisible) {
-        this.logger.debug(
+        this.logJobDiagnostics(
+          options,
           `Job ${id} requires popup but popup is not visible, pausing instead of scheduling`,
         );
         if (!context.isPaused()) {
@@ -186,13 +218,14 @@ export class Scheduler {
       this.registry.setTimeoutId(id, timerId as unknown as NodeJS.Timeout);
     }
 
-    this.logger.info(
+    this.logJobDiagnostics(
+      options,
       `[Scheduler] Job "${id}" scheduled for ${new Date(when).toISOString()} (in ${Math.round(delayMs / 1000)}s) → ${adapter === this.alarm ? '⏰ AlarmAdapter' : '⏱️ TimeoutAdapter'}`,
     );
   }
 
   pause(id: string): void {
-    this.logger.info(`Pausing job ${id}`);
+    this.logJobDiagnostics(this.registry.meta(id), `Pausing job ${id}`);
     // Cancel timers in adapters before pausing
     this.alarm.cancel(id);
     this.timeout.cancel(id);
@@ -200,10 +233,9 @@ export class Scheduler {
   }
 
   resume(id: string): void {
-    this.logger.info(`Resuming job ${id}`);
-    this.registry.resume(id);
-
     const options = this.registry.meta(id);
+    this.logJobDiagnostics(options, `Resuming job ${id}`);
+    this.registry.resume(id);
 
     if (options) {
       this.schedule(id, options);
@@ -211,7 +243,7 @@ export class Scheduler {
   }
 
   stop(id: string): void {
-    this.logger.info(`Stopping job ${id}`);
+    this.logJobDiagnostics(this.registry.meta(id), `Stopping job ${id}`);
     // Cancel timers in adapters before stopping
     this.alarm.cancel(id);
     this.timeout.cancel(id);
@@ -224,12 +256,12 @@ export class Scheduler {
     const options = this.registry.meta(id);
 
     if (!job || !context) {
-      this.logger.debug(`Job ${id} not found or no context`);
+      this.logJobDiagnostics(options, `Job ${id} not found or no context`);
       return;
     }
 
     if (context.isPaused() || context.isStopped()) {
-      this.logger.debug(`Job ${id} is paused or stopped, skipping execution`);
+      this.logJobDiagnostics(options, `Job ${id} is paused or stopped, skipping execution`);
       return;
     }
 
@@ -238,7 +270,7 @@ export class Scheduler {
     if (options?.requiresPopup) {
       const isPopupVisible = PopupVisibilityService.instance.isPopupVisible();
       if (!isPopupVisible) {
-        this.logger.debug(`Job ${id} requires popup but popup closed, pausing job`);
+        this.logJobDiagnostics(options, `Job ${id} requires popup but popup closed, pausing job`);
         this.registry.pause(id);
         return;
       }
@@ -246,12 +278,10 @@ export class Scheduler {
 
     try {
       this.registry.updateState(id, JobState.RUNNING);
-      this.logger.info(`Executing job ${id}`);
+      this.logJobDiagnostics(options, `Executing job ${id}`);
 
       // get job instance from container
       const jobInstance = container.get(id) as IJob;
-
-      this.logger.debug('Job instance:', { jobInstance });
       await jobInstance.handle.bind(jobInstance).call(jobInstance, context);
 
       if (!context.isStopped() && !context.isPaused()) {
@@ -269,7 +299,7 @@ export class Scheduler {
 
       // Still reschedule recurring jobs even after failure
       if (options?.cron || options?.recurring) {
-        this.logger.info(`Rescheduling failed recurring job ${id}`);
+        this.logJobDiagnostics(options, `Rescheduling failed recurring job ${id}`);
         this.registry.updateState(id, JobState.SCHEDULED);
         this.schedule(id, options);
       }
@@ -301,7 +331,7 @@ export class Scheduler {
    * Gracefully shutdown the scheduler, clearing all timers
    */
   shutdown(): void {
-    this.logger.info('Shutting down scheduler...');
+    this.logger.debug('Shutting down scheduler...');
 
     // Unsubscribe from popup visibility changes
     if (this.popupVisibilityUnsubscribe) {
@@ -312,7 +342,7 @@ export class Scheduler {
     this.alarm.clear();
     this.timeout.clear();
     this.registry.clear();
-    this.logger.info('Scheduler shutdown complete');
+    this.logger.debug('Scheduler shutdown complete');
   }
 
   /**

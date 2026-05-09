@@ -19,6 +19,12 @@ export interface EveryOptions {
    * If true, job starts paused and must be resumed manually via Scheduler.resume()
    */
   startPaused?: boolean;
+
+  /**
+   * When true, scheduler diagnostics for this job are logged at `info` instead of only `debug`.
+   * @see JobOptions.schedulerDebug
+   */
+  schedulerDebug?: boolean;
 }
 
 /**
@@ -36,6 +42,10 @@ export interface EveryOptions {
  * // With options - only runs when popup is visible
  * @Every('0 *\/5 * * * *', { requiresPopup: true, name: 'MyJob' })
  * export class MyJob { ... }
+ *
+ * // Scheduler diagnostics at info for this job only
+ * @Every('0 *\/1 * * * *', { name: 'NoisyJob', schedulerDebug: true })
+ * export class NoisyJob { ... }
  * ```
  */
 export function Every(cron: string, options?: EveryOptions) {
@@ -53,6 +63,7 @@ export function Every(cron: string, options?: EveryOptions) {
         cron,
         requiresPopup: options?.requiresPopup ?? false,
         startPaused: options?.startPaused ?? false,
+        schedulerDebug: options?.schedulerDebug ?? false,
       },
       constructor,
     );

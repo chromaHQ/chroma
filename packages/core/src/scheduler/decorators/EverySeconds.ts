@@ -15,6 +15,12 @@ export interface EverySecondsOptions {
    * This reduces unnecessary background activity when the user isn't looking at the extension.
    */
   requiresPopup?: boolean;
+
+  /**
+   * When true, scheduler diagnostics for this job are logged at `info` instead of only `debug`.
+   * @see JobOptions.schedulerDebug
+   */
+  schedulerDebug?: boolean;
 }
 
 /**
@@ -67,6 +73,7 @@ export function EverySeconds(seconds: number, options?: EverySecondsOptions) {
         recurring: true,
         startPaused: options?.startPaused ?? false,
         requiresPopup: options?.requiresPopup ?? false,
+        schedulerDebug: options?.schedulerDebug ?? false,
       },
       constructor,
     );

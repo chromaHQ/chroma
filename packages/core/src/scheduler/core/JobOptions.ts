@@ -37,4 +37,11 @@ export interface JobOptions {
    * ```
    */
   requiresPopup?: boolean;
+
+  /**
+   * When true, the scheduler emits diagnostics for **this job** at `logger.info`
+   * (schedule, execute, pause/resume/stop, popup-skip paths) instead of only
+   * `logger.debug`. Use for targeted troubleshooting without flooding all jobs.
+   */
+  schedulerDebug?: boolean;
 }
