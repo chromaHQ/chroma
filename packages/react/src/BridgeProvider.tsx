@@ -40,7 +40,7 @@ import {
 
 // Global bridge logging toggle; wired to Bootstrap.enableLogs at runtime
 // Consumers can set `window.__CHROMA_ENABLE_LOGS__ = false` to silence logs
-const BRIDGE_ENABLE_LOGS: boolean = true;
+const BRIDGE_ENABLE_LOGS: boolean = false;
 const DIRECT_MESSAGE_FLAG = '__CHROMA_BRIDGE_DIRECT_MESSAGE__';
 
 // ============================================================================
