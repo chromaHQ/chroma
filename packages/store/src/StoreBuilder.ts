@@ -140,8 +140,6 @@ export class StoreBuilder<T = any> {
       reset: () => {
         if (initialState !== null) {
           store.setState(initialState, true); // replace entire state
-        } else {
-          console.warn('ServiceWorkerStore: Cannot reset, initial state not available');
         }
       },
       setBridge: (bridge: any) => {

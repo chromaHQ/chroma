@@ -17,7 +17,6 @@ export function chromeStoragePersist<S>(
       const loadPersistedState = async () => {
         try {
           if (!chrome?.storage?.local) {
-            console.warn(`Chrome storage not available for "${key}", using memory only`);
             isInitialized = true;
             setupPersistence();
             return;
