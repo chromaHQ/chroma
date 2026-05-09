@@ -169,7 +169,7 @@ class BridgeRuntimeManager {
           return;
         }
 
-        this.logger.info(`📡 Port connected: ${port.name}`);
+        this.logger.debug(`📡 Port connected: ${port.name}`);
         this.setupMessageHandler(port);
 
         if (chrome.runtime.lastError) {
@@ -190,7 +190,7 @@ class BridgeRuntimeManager {
     if (isEarlyListenerSetup()) {
       const earlyPorts = claimEarlyPorts(handlePort);
       if (earlyPorts.length > 0) {
-        this.logger.info(
+        this.logger.debug(
           `📡 Processing ${earlyPorts.length} early port(s) captured during bootstrap`,
         );
         earlyPorts.forEach(handlePort);
@@ -259,7 +259,7 @@ class BridgeRuntimeManager {
 
     chrome.alarms.onAlarm.addListener(this.handleKeepAliveAlarm);
     this.keepAliveAlarmRegistered = true;
-    this.logger.info('Registered keep-alive alarm for background wakeups');
+    this.logger.debug('Registered keep-alive alarm for background wakeups');
   }
 
   private handleKeepAliveAlarm = (alarm: chrome.alarms.Alarm): void => {
@@ -378,7 +378,7 @@ class BridgeRuntimeManager {
         void chrome.runtime.lastError;
         this.diagnostics.lastPortDisconnectError = runtimeErrorMessage;
       } else {
-        this.logger.info(`📴 Port disconnected: ${port.name}`);
+        this.logger.debug(`📴 Port disconnected: ${port.name}`);
       }
 
       this.diagnostics.portDisconnects++;
@@ -710,7 +710,7 @@ class BridgeRuntimeManager {
    */
   private startKeepAlive(): void {
     if (this.keepAliveTimer) return;
-    this.logger.info('Starting keep-alive timer to keep service worker alive');
+    this.logger.debug('Starting keep-alive timer to keep service worker alive');
     this.keepAliveTimer = setInterval(() => {
       chrome.runtime.getPlatformInfo(() => {
         this.recordKeepAlivePing('interval');
@@ -731,7 +731,7 @@ class BridgeRuntimeManager {
     if (this.keepAliveTimer) {
       clearInterval(this.keepAliveTimer);
       this.keepAliveTimer = null;
-      this.logger.info('Stopped keep-alive timer');
+      this.logger.debug('Stopped keep-alive timer');
     }
   }
 }

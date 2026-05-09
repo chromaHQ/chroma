@@ -63,12 +63,12 @@ export function setupEarlyListener(portName: string = DEFAULT_PORT_NAME): void {
       onPortConnectCallback(port);
     } else {
       // BridgeRuntime not ready yet, queue the port
-      console.log(`[EarlyListener] Captured early port connection: ${port.name}`);
+      console.debug(`[EarlyListener] Captured early port connection: ${port.name}`);
       earlyPorts.push(port);
     }
   });
 
-  console.log(`[EarlyListener] Early connection listener registered for port: ${portName}`);
+  console.debug(`[EarlyListener] Early connection listener registered for port: ${portName}`);
 }
 
 /**
@@ -102,7 +102,7 @@ export function claimEarlyPorts(
   earlyPorts.length = 0; // Clear the array
 
   if (captured.length > 0) {
-    console.log(`[EarlyListener] Claimed ${captured.length} early port(s)`);
+    console.debug(`[EarlyListener] Claimed ${captured.length} early port(s)`);
   }
 
   return captured;

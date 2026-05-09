@@ -38,9 +38,11 @@ import {
   type MutableRefObject,
 } from 'react';
 
-// Global bridge logging toggle; wired to Bootstrap.enableLogs at runtime
-// Consumers can set `window.__CHROMA_ENABLE_LOGS__ = false` to silence logs
-const BRIDGE_ENABLE_LOGS: boolean = false;
+// Popup-side bridge logs: off by default. Set `window.__CHROMA_ENABLE_LOGS__ = true` to opt in.
+function bridgeUiLogsEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  return (window as Window & { __CHROMA_ENABLE_LOGS__?: boolean }).__CHROMA_ENABLE_LOGS__ === true;
+}
 const DIRECT_MESSAGE_FLAG = '__CHROMA_BRIDGE_DIRECT_MESSAGE__';
 
 // ============================================================================
@@ -494,7 +496,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
 
     // Check queue size limit
     if (requestQueueRef.current.length >= CONFIG.REQUEST_QUEUE_MAX_SIZE) {
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.warn('[Bridge] Request queue full, rejecting request');
       }
       return false;
@@ -502,7 +504,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
 
     // Check for duplicate idempotency key
     if (idempotencyKey && activeIdempotencyKeysRef.current.has(idempotencyKey)) {
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.log(`[Bridge] Duplicate request detected, skipping: ${key}`);
       }
       // Don't reject - the original request will resolve/reject
@@ -528,7 +530,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
 
     requestQueueRef.current.push(queuedRequest);
 
-    if (BRIDGE_ENABLE_LOGS) {
+    if (bridgeUiLogsEnabled()) {
       console.log(
         `[Bridge] Request queued: ${key} (queue size: ${requestQueueRef.current.length})`,
       );
@@ -579,7 +581,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
         const MAX_FALLBACK_RETRIES = 2;
         const FALLBACK_RETRY_DELAY = 300;
 
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.warn(
             `[Bridge] Falling back to runtime.sendMessage (${reason})${retryCount > 0 ? ` [retry ${retryCount}]` : ''}`,
           );
@@ -619,7 +621,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
                 runtimeError?.includes('Receiving end does not exist') &&
                 retryCount < MAX_FALLBACK_RETRIES
               ) {
-                if (BRIDGE_ENABLE_LOGS) {
+                if (bridgeUiLogsEnabled()) {
                   console.warn(
                     `[Bridge] SW not ready, retrying fallback in ${FALLBACK_RETRY_DELAY}ms...`,
                   );
@@ -681,7 +683,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
           consecutiveTimeoutsRef.current++;
         }
 
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.warn(
             `[Bridge] Request timed out: ${key} (${timeoutDuration}ms)${reconnectionGracePeriodRef.current ? ' [grace period]' : ''}${!isShortTimeout ? ' [long operation, not counted toward reconnect]' : ''}`,
           );
@@ -694,7 +696,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
           isShortTimeout &&
           consecutiveTimeoutsRef.current >= CONFIG.CONSECUTIVE_FAILURE_THRESHOLD
         ) {
-          if (BRIDGE_ENABLE_LOGS) {
+          if (bridgeUiLogsEnabled()) {
             console.warn(
               `[Bridge] ${consecutiveTimeoutsRef.current} consecutive timeouts, reconnecting...`,
             );
@@ -737,7 +739,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
           );
 
           if (queued) {
-            if (BRIDGE_ENABLE_LOGS) {
+            if (bridgeUiLogsEnabled()) {
               console.log(`[Bridge] Request queued during reconnection: ${key}`);
             }
             return;
@@ -791,7 +793,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
           throw new Error(immediateError);
         }
       } catch (e) {
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.warn('[Bridge] Port send failed, attempting fallback', e);
         }
         triggerRuntimeFallback('port-postmessage-error');
@@ -801,7 +803,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
 
   const broadcast = (key: string, payload: unknown): void => {
     if (!portRef.current) {
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.warn('[Bridge] Cannot broadcast - disconnected');
       }
       return;
@@ -810,7 +812,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
     try {
       portRef.current.postMessage({ type: 'broadcast', key, payload });
     } catch (e) {
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.warn('[Bridge] Broadcast failed:', e);
       }
     }
@@ -853,14 +855,14 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
     pauseHealthChecks: (durationMs: number): void => {
       const pauseUntil = Date.now() + durationMs;
       healthPausedUntilRef.current = pauseUntil;
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.log(`[Bridge] Health checks paused for ${Math.round(durationMs / 1000)}s`);
       }
     },
     ensureConnected: async (): Promise<boolean> => {
       // First check local state - if we know we're disconnected, don't even try
       if (!isPortValid()) {
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.warn('[Bridge] ensureConnected: Port invalid, triggering reconnect');
         }
         onReconnectNeeded();
@@ -874,7 +876,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
         await send('__ping__', undefined, QUICK_PING_TIMEOUT);
         return true;
       } catch {
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.warn('[Bridge] ensureConnected: Ping failed, SW may be unresponsive');
         }
         // Don't automatically trigger reconnect here - let the caller decide
@@ -922,7 +924,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
         }, 5000);
       });
 
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.log(`[Bridge] Sending critical operation: ${key} (nonce: ${nonce})`);
       }
 
@@ -934,7 +936,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
           ackPromise,
         ]);
 
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.log(
             `[Bridge] Critical operation completed: ${key} (nonce: ${nonce}, acked: ${acknowledged})`,
           );
@@ -946,7 +948,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
           acknowledged,
         };
       } catch (error) {
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.error(
             `[Bridge] Critical operation failed: ${key} (nonce: ${nonce}, acked: ${acknowledged})`,
             error,
@@ -1008,13 +1010,13 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
   clearIntervalSafe(pingIntervalRef);
   consecutivePingFailuresRef.current = 0;
 
-  if (BRIDGE_ENABLE_LOGS) {
+  if (bridgeUiLogsEnabled()) {
     console.log(`[Bridge] Starting health monitor (ping every ${pingInterval}ms)`);
   }
 
   pingIntervalRef.current = setInterval(async () => {
     if (!bridge.isConnected) {
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.log('[Bridge] Health check skipped - not connected');
       }
       return;
@@ -1023,7 +1025,7 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
     // Check if health checks are paused (set via health:pause broadcast)
     const pausedUntil = healthPausedUntilRef.current;
     if (pausedUntil && Date.now() < pausedUntil) {
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         const remainingMs = pausedUntil - Date.now();
         console.log(
           `[Bridge] Health check skipped - paused for ${Math.round(remainingMs / 1000)}s more`,
@@ -1056,12 +1058,12 @@ function startHealthMonitor(deps: HealthMonitorDeps): void {
     recordDiagnostics.pingFailure();
 
     consecutivePingFailuresRef.current++;
-    if (BRIDGE_ENABLE_LOGS) {
+    if (bridgeUiLogsEnabled()) {
       console.warn(`[Bridge] Ping failed (${consecutivePingFailuresRef.current}x)`);
     }
 
     if (consecutivePingFailuresRef.current >= CONFIG.CONSECUTIVE_FAILURE_THRESHOLD) {
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.warn(
           '[Bridge] Service worker unresponsive, rejecting pending requests and reconnecting...',
         );
@@ -1181,7 +1183,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         try {
           handler(undefined);
         } catch (err) {
-          if (BRIDGE_ENABLE_LOGS) {
+          if (bridgeUiLogsEnabled()) {
             console.warn('[Bridge] bridge:disconnected handler error:', err);
           }
         }
@@ -1210,7 +1212,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
     // Instead, move them to the queue so they can be retried
     if (preserveQueue) {
       const pendingCount = pendingRequestsRef.current.size;
-      if (pendingCount > 0 && BRIDGE_ENABLE_LOGS) {
+      if (pendingCount > 0 && bridgeUiLogsEnabled()) {
         console.log(
           `[Bridge] Preserving ${pendingCount} pending requests for retry after reconnect`,
         );
@@ -1230,7 +1232,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
             maxRetries: CONFIG.REQUEST_MAX_RETRIES,
             queuedAt: Date.now(),
           });
-          if (BRIDGE_ENABLE_LOGS) {
+          if (bridgeUiLogsEnabled()) {
             console.log(`[Bridge] Queued pending request for retry: ${key}`);
           }
         },
@@ -1291,7 +1293,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       const listeners = eventListenersRef.current.get(message.key);
       const listenerCount = listeners?.size ?? 0;
 
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.log(
           `[Bridge] 📡 Received broadcast: ${message.key}, dispatching to ${listenerCount} listeners`,
         );
@@ -1301,7 +1303,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         try {
           handler(message.payload);
         } catch (err) {
-          if (BRIDGE_ENABLE_LOGS) {
+          if (bridgeUiLogsEnabled()) {
             console.warn('[Bridge] Event handler error:', err);
           }
         }
@@ -1310,7 +1312,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
     }
 
     // Log unhandled messages (response for already-timed-out request, or malformed message)
-    if (message.id && BRIDGE_ENABLE_LOGS) {
+    if (message.id && bridgeUiLogsEnabled()) {
       console.warn('[Bridge] Received response for unknown/expired request:', message.id);
     }
   }, []);
@@ -1319,20 +1321,20 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   // This processes queued requests one by one with small delays to avoid overwhelming the SW
   const drainRequestQueue = useCallback(() => {
     if (requestQueueRef.current.length === 0) {
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.log('[Bridge] Request queue empty, nothing to drain');
       }
       return;
     }
 
     if (!bridgeRef.current || !isConnectedRef.current) {
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.log('[Bridge] Cannot drain queue - not connected');
       }
       return;
     }
 
-    if (BRIDGE_ENABLE_LOGS) {
+    if (bridgeUiLogsEnabled()) {
       console.log(`[Bridge] Draining request queue (${requestQueueRef.current.length} requests)`);
     }
 
@@ -1342,7 +1344,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       const request = requestQueueRef.current.shift();
       if (!request) {
         // Queue exhausted
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.log('[Bridge] Request queue drained successfully');
         }
         return;
@@ -1351,7 +1353,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       // Check if request has expired (been in queue too long)
       const queuedDuration = Date.now() - request.queuedAt;
       if (queuedDuration > request.timeoutDuration) {
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.warn(`[Bridge] Queued request expired: ${request.key}`);
         }
         if (request.idempotencyKey) {
@@ -1363,7 +1365,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         return;
       }
 
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.log(
           `[Bridge] Re-sending queued request: ${request.key} (retry ${request.retryCount + 1}/${request.maxRetries})`,
         );
@@ -1373,7 +1375,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       bridgeRef
         .current!.send(request.key, request.payload, request.timeoutDuration - queuedDuration)
         .then((data) => {
-          if (BRIDGE_ENABLE_LOGS) {
+          if (bridgeUiLogsEnabled()) {
             console.log(`[Bridge] ✅ Queued request succeeded: ${request.key}`);
           }
           if (request.idempotencyKey) {
@@ -1392,7 +1394,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
               CONFIG.REQUEST_RETRY_MAX_DELAY,
             );
 
-            if (BRIDGE_ENABLE_LOGS) {
+            if (bridgeUiLogsEnabled()) {
               console.log(
                 `[Bridge] Request failed, re-queuing: ${request.key} (retry in ${retryDelay}ms)`,
               );
@@ -1408,7 +1410,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
           }
 
           // Max retries exceeded - give up
-          if (BRIDGE_ENABLE_LOGS) {
+          if (bridgeUiLogsEnabled()) {
             console.error(
               `[Bridge] ❌ Queued request failed after ${request.maxRetries} retries: ${request.key}`,
               error,
@@ -1443,7 +1445,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
           retryAfter,
           CONFIG.MAX_RETRY_DELAY,
         );
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.log(
             `[Bridge] Reconnecting in ${delay}ms (${retryCountRef.current}/${maxRetries})`,
           );
@@ -1453,13 +1455,13 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
           if (isMountedRef.current) connectFn();
         }, delay);
       } else {
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.warn(`[Bridge] Max retries reached. Cooldown: ${maxRetryCooldown}ms`);
         }
         clearTimeoutSafe(maxRetryCooldownRef);
         maxRetryCooldownRef.current = setTimeout(() => {
           if (!isMountedRef.current) return;
-          if (BRIDGE_ENABLE_LOGS) {
+          if (bridgeUiLogsEnabled()) {
             console.log('[Bridge] Cooldown complete, reconnecting...');
           }
           retryCountRef.current = 0;
@@ -1474,12 +1476,12 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   // This handles the case when the service worker is restarting and not yet available
   const scheduleSwRestartReconnect = useCallback(
     (connectFn: () => void) => {
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.log('[Bridge] scheduleSwRestartReconnect called, isMounted:', isMountedRef.current);
       }
 
       if (!isMountedRef.current) {
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.log('[Bridge] Not mounted, skipping SW restart reconnect');
         }
         return;
@@ -1495,7 +1497,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         CONFIG.SW_RESTART_MAX_DELAY,
       );
 
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.log(
           `[Bridge] Service worker not ready, retrying in ${delay}ms (attempt ${swRestartRetryCountRef.current})`,
         );
@@ -1503,7 +1505,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       updateStatus('reconnecting');
 
       reconnectTimeoutRef.current = setTimeout(() => {
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.log('[Bridge] SW restart timeout fired, isMounted:', isMountedRef.current);
         }
         if (isMountedRef.current) connectFn();
@@ -1514,12 +1516,12 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
 
   // Main connection logic
   const connect = useCallback(() => {
-    if (BRIDGE_ENABLE_LOGS) {
+    if (bridgeUiLogsEnabled()) {
       console.log('[Bridge] connect() called, isConnecting:', isConnectingRef.current);
     }
 
     if (isConnectingRef.current) {
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.log('[Bridge] Already connecting, skipping...');
       }
       return;
@@ -1539,14 +1541,14 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
     }
 
     try {
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.log('[Bridge] Attempting chrome.runtime.connect...');
       }
       const port = chrome.runtime.connect({ name: CONFIG.PORT_NAME });
       const immediateError = consumeRuntimeError();
       if (immediateError) throw new Error(immediateError);
 
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.log('[Bridge] Port created successfully:', port.name);
       }
       portRef.current = port;
@@ -1560,7 +1562,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         if (err) {
           clearIntervalSafe(errorCheckIntervalRef);
           if (err.includes('Receiving end does not exist')) {
-            if (BRIDGE_ENABLE_LOGS) {
+            if (bridgeUiLogsEnabled()) {
               console.warn('[Bridge] Service worker not ready (may be restarting)...');
             }
             cleanup(false); // No active port yet, just reset before retrying
@@ -1580,7 +1582,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       port.onMessage.addListener(handleMessage);
 
       port.onDisconnect.addListener(() => {
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.warn('[Bridge] *** onDisconnect FIRED ***');
         }
 
@@ -1594,7 +1596,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
 
         recordDiagnostics.portDisconnect(disconnectError);
 
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.warn('[Bridge] Disconnect error:', disconnectError || '(none)');
           console.warn('[Bridge] isMounted:', isMountedRef.current);
         }
@@ -1606,12 +1608,12 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         // Only schedule reconnect if still mounted
         // Always use SW restart retry (infinite) since any disconnect could be SW stopping
         if (isMountedRef.current) {
-          if (BRIDGE_ENABLE_LOGS) {
+          if (bridgeUiLogsEnabled()) {
             console.log('[Bridge] Scheduling SW restart reconnect...');
           }
           scheduleSwRestartReconnect(connect);
         } else {
-          if (BRIDGE_ENABLE_LOGS) {
+          if (bridgeUiLogsEnabled()) {
             console.log('[Bridge] Not mounted, NOT scheduling reconnect');
           }
         }
@@ -1666,7 +1668,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       consecutiveTimeoutsRef.current = 0;
       isConnectingRef.current = false;
 
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         const queueSize = requestQueueRef.current.length;
         const pendingSize = pendingRequestsRef.current.size;
         console.log(`[Bridge] ✅ PORT CONNECTED | Queued: ${queueSize} | Pending: ${pendingSize}`);
@@ -1683,7 +1685,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         const attemptVerify = (attempt: number): Promise<boolean> => {
           // Abort if this port is no longer the current port (e.g., component remounted)
           if (portRef.current !== targetPort) {
-            if (BRIDGE_ENABLE_LOGS) {
+            if (bridgeUiLogsEnabled()) {
               console.log(`[Bridge] Verification aborted - port changed (attempt ${attempt})`);
             }
             return Promise.resolve(false);
@@ -1693,7 +1695,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
             return Promise.resolve(false);
           }
 
-          if (BRIDGE_ENABLE_LOGS) {
+          if (bridgeUiLogsEnabled()) {
             console.log(
               `[Bridge] Verifying connection (attempt ${attempt}/${MAX_VERIFY_RETRIES})...`,
             );
@@ -1716,7 +1718,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
                 return;
               }
               // Retry on timeout
-              if (BRIDGE_ENABLE_LOGS) {
+              if (bridgeUiLogsEnabled()) {
                 console.warn(`[Bridge] Verification ping timeout (attempt ${attempt})`);
               }
               setTimeout(() => {
@@ -1732,7 +1734,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
                   resolve(false);
                   return;
                 }
-                if (BRIDGE_ENABLE_LOGS) {
+                if (bridgeUiLogsEnabled()) {
                   console.log('[Bridge] ✅ VERIFIED - SW is responding');
                 }
                 resolve(true);
@@ -1745,7 +1747,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
                   return;
                 }
                 // Retry on error
-                if (BRIDGE_ENABLE_LOGS) {
+                if (bridgeUiLogsEnabled()) {
                   console.warn(`[Bridge] Verification ping error (attempt ${attempt})`);
                 }
                 setTimeout(() => {
@@ -1768,7 +1770,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
                 resolve(false);
                 return;
               }
-              if (BRIDGE_ENABLE_LOGS) {
+              if (bridgeUiLogsEnabled()) {
                 console.warn(`[Bridge] Verification postMessage error (attempt ${attempt}):`, e);
               }
               // Retry on postMessage error
@@ -1785,20 +1787,20 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       // Verify connection before draining queue (using .then() to keep connect() synchronous)
       // Add initial delay to give SW time to bootstrap its message handlers after port connects
       const startVerification = () => {
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.log('[Bridge] Starting verification after initial delay...');
         }
         verifyConnection(port).then((verified) => {
           // Abort if port changed or component unmounted
           if (!isMountedRef.current || portRef.current !== port) {
-            if (BRIDGE_ENABLE_LOGS) {
+            if (bridgeUiLogsEnabled()) {
               console.log('[Bridge] Verification callback aborted - context changed');
             }
             return;
           }
 
           if (!verified) {
-            if (BRIDGE_ENABLE_LOGS) {
+            if (bridgeUiLogsEnabled()) {
               console.error('[Bridge] ❌ Connection verification failed - SW not responding');
             }
             // Connection appears broken - trigger reconnection
@@ -1808,7 +1810,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
             return;
           }
 
-          if (BRIDGE_ENABLE_LOGS) {
+          if (bridgeUiLogsEnabled()) {
             const queueSize = requestQueueRef.current.length;
             console.log(
               `[Bridge] ✅ RECONNECTED SUCCESSFULLY | Queue: ${queueSize} requests to drain`,
@@ -1825,14 +1827,14 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
 
           // Emit bridge:connected event for stores to re-initialize
           // Only emit AFTER verification succeeds (moved from outside .then())
-          if (BRIDGE_ENABLE_LOGS) {
+          if (bridgeUiLogsEnabled()) {
             console.log('[Bridge] Emitting bridge:connected event to stores');
           }
           eventListenersRef.current.get('bridge:connected')?.forEach((handler) => {
             try {
               handler({ timestamp: Date.now() });
             } catch (err) {
-              if (BRIDGE_ENABLE_LOGS) {
+              if (bridgeUiLogsEnabled()) {
                 console.warn('[Bridge] bridge:connected handler error:', err);
               }
             }
@@ -1851,7 +1853,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
       reconnectionGracePeriodRef.current = true;
       setTimeout(() => {
         reconnectionGracePeriodRef.current = false;
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.log('[Bridge] Grace period ended, timeout monitoring active');
         }
       }, 10000); // 10 second grace period (increased for slow environments)
@@ -1910,7 +1912,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   useEffect(() => {
     // Guard against duplicate connections in React Strict Mode or hot reload
     if (portRef.current || isConnectingRef.current) {
-      if (BRIDGE_ENABLE_LOGS) {
+      if (bridgeUiLogsEnabled()) {
         console.log('[Bridge] Lifecycle: Connection already exists, skipping connect()');
       }
       return;
@@ -1931,7 +1933,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         currentStatus === 'error' ||
         currentStatus === 'reconnecting'
       ) {
-        if (BRIDGE_ENABLE_LOGS) {
+        if (bridgeUiLogsEnabled()) {
           console.log('[Bridge] Tab visible, reconnecting...');
         }
         retryCountRef.current = 0;
@@ -1950,7 +1952,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
             if (isConnectingRef.current) return; // Another reconnect started while we were pinging
 
             if (!alive) {
-              if (BRIDGE_ENABLE_LOGS) {
+              if (bridgeUiLogsEnabled()) {
                 console.warn('[Bridge] Tab visible but unresponsive, reconnecting...');
               }
               retryCountRef.current = 0;
