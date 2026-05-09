@@ -62,13 +62,9 @@ export function setupEarlyListener(portName: string = DEFAULT_PORT_NAME): void {
       // BridgeRuntime is ready, pass directly to it
       onPortConnectCallback(port);
     } else {
-      // BridgeRuntime not ready yet, queue the port
-      console.debug(`[EarlyListener] Captured early port connection: ${port.name}`);
       earlyPorts.push(port);
     }
   });
-
-  console.debug(`[EarlyListener] Early connection listener registered for port: ${portName}`);
 }
 
 /**
@@ -91,7 +87,6 @@ export function claimEarlyPorts(
   onConnect: (port: chrome.runtime.Port) => void,
 ): chrome.runtime.Port[] {
   if (portsClaimed) {
-    console.warn('[EarlyListener] Ports already claimed, returning empty array');
     return [];
   }
 
@@ -100,10 +95,6 @@ export function claimEarlyPorts(
 
   const captured = [...earlyPorts];
   earlyPorts.length = 0; // Clear the array
-
-  if (captured.length > 0) {
-    console.debug(`[EarlyListener] Claimed ${captured.length} early port(s)`);
-  }
 
   return captured;
 }

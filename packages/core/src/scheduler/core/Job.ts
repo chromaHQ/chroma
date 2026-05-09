@@ -5,15 +5,9 @@ export abstract class Job<T = unknown> implements IJob<T> {
 
   abstract handle(context?: JobContext): Promise<void> | void;
 
-  pause?(): Promise<void> | void {
-    console.log(`Job ${this.constructor.name} paused`);
-  }
+  pause?(): Promise<void> | void {}
 
-  resume?(): Promise<void> | void {
-    console.log(`Job ${this.constructor.name} resumed`);
-  }
+  resume?(): Promise<void> | void {}
 
-  stop?(): Promise<void> | void {
-    console.log(`Job ${this.constructor.name} stopped`);
-  }
+  stop?(): Promise<void> | void {}
 }

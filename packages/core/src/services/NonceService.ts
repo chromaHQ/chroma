@@ -335,18 +335,12 @@ export class NonceService {
    */
   private cleanup(): void {
     const now = Date.now();
-    let removed = 0;
 
     this.nonceStore.forEach((entry, nonce) => {
       if (now > entry.expiresAt) {
         this.nonceStore.delete(nonce);
-        removed++;
       }
     });
-
-    if (removed > 0) {
-      console.log(`[NonceService] Cleaned up ${removed} expired nonces`);
-    }
   }
 
   /**

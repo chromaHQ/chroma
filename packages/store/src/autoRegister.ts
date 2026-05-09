@@ -17,28 +17,16 @@ export function autoRegisterStoreHandlers<T>(
     throw new Error('autoRegisterStoreHandlers: store must have setState method');
   }
 
-  console.log(`[Store] Creating handlers for store "${storeName}"`, {
-    hasGetState: typeof store.getState === 'function',
-    hasSetState: typeof store.setState === 'function',
-  });
-
   // Create classes with the store instance bound at creation time
   class AutoGetStoreStateMessage {
     handle(): T {
-      console.log(`[Store] GetState handler called for "${storeName}"`);
-
       if (!store) {
         console.error(`[Store] Store instance not available for "${storeName}"`);
         throw new Error('Store instance not available');
       }
 
       try {
-        const state = store.getState();
-        console.log(`[Store] GetState returning state for "${storeName}"`, {
-          hasState: state !== undefined && state !== null,
-          stateType: typeof state,
-        });
-        return state;
+        return store.getState();
       } catch (error) {
         console.error(`[Store] GetState failed for "${storeName}":`, error);
         throw error;
@@ -98,8 +86,6 @@ export function autoRegisterStoreHandlers<T>(
 
   class AutoResetStoreMessage {
     handle(): T {
-      console.log(`[Store] Reset handler called for "${storeName}"`);
-
       if (!store) {
         console.error(`[Store] Store instance not available for "${storeName}"`);
         throw new Error('Store instance not available');

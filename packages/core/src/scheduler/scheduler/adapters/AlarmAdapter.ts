@@ -35,11 +35,6 @@ export class AlarmAdapter {
 
       chrome.alarms.onAlarm.addListener(this.handleAlarm);
       this.listenerRegistered = true;
-      console.log('[AlarmAdapter] ✅ Chrome Alarms API available and listener registered');
-    } else {
-      console.log(
-        '[AlarmAdapter] ⚠️ Chrome Alarms API not available - will use setTimeout fallback',
-      );
     }
   };
 
@@ -54,9 +49,6 @@ export class AlarmAdapter {
       chrome.alarms.getAll((alarms) => {
         const staleAlarms = alarms.filter((a) => a.name.startsWith(AlarmAdapter.ALARM_PREFIX));
         if (staleAlarms.length > 0) {
-          console.log(
-            `[AlarmAdapter] 🧹 Clearing ${staleAlarms.length} stale alarms from previous session`,
-          );
           let cleared = 0;
           staleAlarms.forEach((alarm) => {
             chrome.alarms.clear(alarm.name, () => {
@@ -96,7 +88,6 @@ export class AlarmAdapter {
     }
 
     const jobId = alarm.name.slice(AlarmAdapter.ALARM_PREFIX.length);
-    console.log(`[AlarmAdapter] 🔔 Chrome Alarm fired: ${jobId}`);
     this.callbacks.delete(jobId);
     this.triggerCallback?.(jobId);
   };
@@ -121,10 +112,6 @@ export class AlarmAdapter {
         when,
       });
 
-      console.log(
-        `[AlarmAdapter] ⏰ Chrome Alarm scheduled: ${id} in ${Math.round(delay / 1000)}s`,
-      );
-
       // Store a no-op callback just to track active alarms
       this.callbacks.set(id, () => {
         chrome.alarms.clear(alarmName);
@@ -132,10 +119,6 @@ export class AlarmAdapter {
 
       return null; // No timeout ID for Chrome alarms
     }
-
-    console.log(
-      `[AlarmAdapter] ⏱️ setTimeout fallback: ${id} in ${Math.round(delay / 1000)}s (Chrome Alarms: ${this.isChromeAlarmsAvailable() ? 'available but delay too short' : 'unavailable'})`,
-    );
 
     // Fall back to setTimeout for very short delays or if Chrome Alarms unavailable
     const timeoutId = setTimeout(() => {

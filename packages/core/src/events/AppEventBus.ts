@@ -130,7 +130,7 @@ export class AppEventBus {
       return;
     }
 
-    const results = await Promise.allSettled(
+    await Promise.allSettled(
       matching.map(async (sub) => {
         try {
           await sub.handler(payload);
@@ -144,15 +144,6 @@ export class AppEventBus {
         }
       }),
     );
-
-    const failed = results.filter((r) => r.status === 'rejected').length;
-
-    if (failed > 0) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[AppEventBus] ${failed}/${matching.length} handler(s) failed for event "${eventName}"`,
-      );
-    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────

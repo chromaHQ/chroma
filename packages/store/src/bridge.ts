@@ -1,10 +1,8 @@
 import type { CentralStore } from './types.js';
 
-// Shared logging flag (aligned with BridgeProvider)
+// Shared logging flag: off by default (set `globalThis.__CHROMA_ENABLE_LOGS__ = true` to opt in).
 const STORE_ENABLE_LOGS: boolean =
-  typeof globalThis !== 'undefined' && (globalThis as any).__CHROMA_ENABLE_LOGS__ === false
-    ? false
-    : true;
+  typeof globalThis !== 'undefined' && (globalThis as any).__CHROMA_ENABLE_LOGS__ === true;
 
 // Import bridge types from chroma core/react
 export interface Bridge {
