@@ -1,5 +1,5 @@
 /**
- * Alarm Adapter for scheduling jobs using Chrome Alarms API
+ * @fileoverview Schedules jobs with the Chrome Alarms API.
  *
  * Chrome Alarms API benefits for Service Workers:
  * - Alarms survive SW termination and wake it up when they fire
@@ -42,25 +42,36 @@ export class AlarmAdapter {
    * Clear any stale chroma alarms from previous SW instances.
    * Returns a promise that resolves once all stale alarms are cleared.
    */
-  private clearStaleAlarms = (): Promise<void> => {
-    if (!this.isChromeAlarmsAvailable()) return Promise.resolve();
+  private clearStaleAlarms = async (): Promise<void> => {
+    if (!this.isChromeAlarmsAvailable()) return;
 
-    return new Promise<void>((resolve) => {
+    const staleAlarms = await this.getChromaAlarms();
+    await Promise.all(
+      staleAlarms.map(
+        (alarm) =>
+          new Promise<void>((resolve) => {
+            chrome.alarms.clear(alarm.name, () => resolve());
+          }),
+      ),
+    );
+  };
+
+  /**
+   * Get Chroma alarms without allowing a Chrome API error to stop service-worker startup.
+   */
+  private getChromaAlarms = (): Promise<chrome.alarms.Alarm[]> => {
+    if (!this.isChromeAlarmsAvailable()) return Promise.resolve([]);
+
+    return new Promise<chrome.alarms.Alarm[]>((resolve) => {
       chrome.alarms.getAll((alarms) => {
-        const staleAlarms = alarms.filter((a) => a.name.startsWith(AlarmAdapter.ALARM_PREFIX));
-        if (staleAlarms.length > 0) {
-          let cleared = 0;
-          staleAlarms.forEach((alarm) => {
-            chrome.alarms.clear(alarm.name, () => {
-              cleared++;
-              if (cleared === staleAlarms.length) {
-                resolve();
-              }
-            });
-          });
-        } else {
-          resolve();
+        if (chrome.runtime?.lastError || !Array.isArray(alarms)) {
+          resolve([]);
+          return;
         }
+
+        resolve(
+          alarms.filter((alarm) => alarm.name.startsWith(AlarmAdapter.ALARM_PREFIX)),
+        );
       });
     });
   };
@@ -74,6 +85,7 @@ export class AlarmAdapter {
       chrome.alarms &&
       typeof chrome.alarms.create === 'function' &&
       typeof chrome.alarms.clear === 'function' &&
+      typeof chrome.alarms.getAll === 'function' &&
       chrome.alarms.onAlarm?.addListener
     );
   };
@@ -162,11 +174,9 @@ export class AlarmAdapter {
 
     // Clear all Chrome alarms with our prefix
     if (this.isChromeAlarmsAvailable()) {
-      chrome.alarms.getAll((alarms) => {
+      void this.getChromaAlarms().then((alarms) => {
         for (const alarm of alarms) {
-          if (alarm.name.startsWith(AlarmAdapter.ALARM_PREFIX)) {
-            chrome.alarms.clear(alarm.name);
-          }
+          chrome.alarms.clear(alarm.name);
         }
       });
     }
@@ -183,12 +193,7 @@ export class AlarmAdapter {
     const chromeAlarms: chrome.alarms.Alarm[] = [];
 
     if (this.isChromeAlarmsAvailable()) {
-      await new Promise<void>((resolve) => {
-        chrome.alarms.getAll((alarms) => {
-          chromeAlarms.push(...alarms.filter((a) => a.name.startsWith(AlarmAdapter.ALARM_PREFIX)));
-          resolve();
-        });
-      });
+      chromeAlarms.push(...(await this.getChromaAlarms()));
     }
 
     return {
