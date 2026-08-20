@@ -1,4 +1,6 @@
 import type { CentralStore } from './types.js';
+import { replaceEqualDeep } from './structuralShare.js';
+import { applyStateDelta, isStateDelta, type StateDelta } from './stateDelta.js';
 
 // Import bridge types from chroma core/react
 export interface Bridge {
@@ -46,6 +48,21 @@ export class BridgeStore<T> implements CentralStore<T> {
   private stateSyncDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly stateSyncDebounceMs: number = 50; // Reduced to 50ms for faster reactivity
 
+  // A trailing debounce alone can starve the UI: a store that is written to
+  // more often than the debounce window would never flush. Once a batch has
+  // been waiting this long it is applied regardless of further activity.
+  private readonly stateSyncMaxWaitMs: number = 250;
+  private stateSyncBatchStartedAt: number | null = null;
+
+  // Deltas arriving during a debounce window are merged rather than dropped;
+  // unlike a full-state payload, a later delta does not supersede an earlier one.
+  private pendingDelta: StateDelta<T> | null = null;
+  private pendingFullState: T | null = null;
+
+  // Sequence of the next delta expected from the service worker. A gap means a
+  // broadcast was missed, so the store refetches instead of merging blindly.
+  private expectedDeltaSequence: number | null = null;
+
   // Reconnect delay timer (to allow SW to bootstrap before re-initializing)
   private reconnectDelayTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -92,6 +109,13 @@ export class BridgeStore<T> implements CentralStore<T> {
           this.stateSyncDebounceTimer = null;
         }
         this.pendingStateSync = false;
+        this.stateSyncBatchStartedAt = null;
+
+        // Anything buffered describes a stream that is now broken; the
+        // reconnect path refetches the whole state instead.
+        this.pendingDelta = null;
+        this.pendingFullState = null;
+        this.expectedDeltaSequence = null;
 
         // Reset initialization state so we can re-initialize cleanly
         this.isInitializing = false;
@@ -215,15 +239,15 @@ export class BridgeStore<T> implements CentralStore<T> {
       // Get initial state from service worker
       const state = await this.bridge.send<void, T>(`store:${this.storeName}:getState`);
 
-      this.previousState = this.currentState;
-      this.currentState = state;
-
       // Store initial state for reset functionality
       if (this.initialState === null) {
         this.initialState = state;
       }
 
-      this.notifyListeners();
+      // Any delta the service worker sends from here is relative to a state at
+      // or after this one, so restart gap tracking.
+      this.expectedDeltaSequence = null;
+      this.applyState(state);
 
       this.ready = true;
       this.isInitializing = false;
@@ -250,16 +274,41 @@ export class BridgeStore<T> implements CentralStore<T> {
   private pendingStateSync = false;
 
   /**
-   * Apply state directly from broadcast payload (no round-trip)
+   * Adopt a new state, reusing references for every subtree that did not change.
+   *
+   * State arriving over the bridge is freshly deserialized, so every value has a
+   * new identity even when it holds the same data. Without structural sharing,
+   * selectors comparing with `Object.is` see a change in every slice on every
+   * broadcast and every subscribed component re-renders. Reusing equal subtrees
+   * means only the slices that actually changed invalidate.
+   *
+   * @returns Whether the state changed and listeners were notified.
    */
-  private applyBroadcastState(newState: T) {
-    if (!newState || typeof newState !== 'object') {
-      return;
+  private applyState(nextState: T): boolean {
+    if (!nextState || typeof nextState !== 'object') {
+      return false;
+    }
+
+    const shared =
+      this.currentState === null ? nextState : replaceEqualDeep(this.currentState, nextState);
+
+    // Deeply equal to what we already hold: no listener has anything to react
+    // to, so skip the notification entirely.
+    if (shared === this.currentState) {
+      return false;
     }
 
     this.previousState = this.currentState;
-    this.currentState = newState;
+    this.currentState = shared;
     this.notifyListeners();
+    return true;
+  }
+
+  /**
+   * Apply state directly from broadcast payload (no round-trip)
+   */
+  private applyBroadcastState(newState: T) {
+    this.applyState(newState);
   }
 
   /**
@@ -280,9 +329,10 @@ export class BridgeStore<T> implements CentralStore<T> {
       .then((newState) => {
         // Only apply if this is still the latest request
         if (currentSequence === this.stateSyncSequence) {
-          this.previousState = this.currentState;
-          this.currentState = newState;
-          this.notifyListeners();
+          // A full refetch resynchronizes the delta stream: the next delta the
+          // service worker sends is the first one this state has not seen.
+          this.expectedDeltaSequence = null;
+          this.applyState(newState);
         }
       })
       .catch((error) => {
@@ -293,27 +343,119 @@ export class BridgeStore<T> implements CentralStore<T> {
       });
   }
 
+  /**
+   * Fold an incoming delta into the one waiting to be applied.
+   *
+   * Debouncing must not drop deltas the way it can drop full-state payloads: a
+   * later full state supersedes an earlier one, but a later delta only describes
+   * its own changes. Merging in arrival order keeps the batch complete.
+   *
+   * @returns Whether the delta could be merged. `false` means a broadcast was
+   *   missed and the caller should refetch the full state.
+   */
+  private queueDelta(delta: StateDelta<T>): boolean {
+    const inSequence =
+      this.expectedDeltaSequence === null || delta.sequence === this.expectedDeltaSequence;
+
+    if (!inSequence) {
+      this.pendingDelta = null;
+      return false;
+    }
+
+    this.expectedDeltaSequence = delta.sequence + 1;
+
+    if (this.pendingDelta === null) {
+      this.pendingDelta = delta;
+      return true;
+    }
+
+    const removed = new Set([...(this.pendingDelta.removed ?? []), ...(delta.removed ?? [])]);
+    for (const key of Object.keys(delta.changed)) {
+      removed.delete(key);
+    }
+
+    this.pendingDelta = {
+      ...this.pendingDelta,
+      changed: { ...this.pendingDelta.changed, ...delta.changed },
+      ...(removed.size > 0 ? { removed: [...removed] } : {}),
+      sequence: delta.sequence,
+    };
+
+    return true;
+  }
+
+  /** Applies whatever the debounce window accumulated. */
+  private flushStateSync() {
+    this.stateSyncDebounceTimer = null;
+    this.stateSyncBatchStartedAt = null;
+
+    const delta = this.pendingDelta;
+    const fullState = this.pendingFullState;
+    this.pendingDelta = null;
+    this.pendingFullState = null;
+
+    if (fullState) {
+      this.applyState(fullState);
+      return;
+    }
+
+    if (delta && this.currentState) {
+      this.applyState(
+        applyStateDelta(this.currentState as Record<string, unknown>, delta as never) as T,
+      );
+      return;
+    }
+
+    // Either a payload-less notification or a delta that arrived before any
+    // state existed; both are resolved by asking for the whole thing.
+    this.fetchAndApplyState();
+  }
+
+  /** Schedules a flush, honouring both the debounce window and its max wait. */
+  private scheduleStateSync() {
+    const now = Date.now();
+
+    if (this.stateSyncBatchStartedAt === null) {
+      this.stateSyncBatchStartedAt = now;
+    }
+
+    const waitedMs = now - this.stateSyncBatchStartedAt;
+    const remainingMaxWait = Math.max(0, this.stateSyncMaxWaitMs - waitedMs);
+    const delay = Math.min(this.stateSyncDebounceMs, remainingMaxWait);
+
+    if (this.stateSyncDebounceTimer) {
+      clearTimeout(this.stateSyncDebounceTimer);
+    }
+
+    this.stateSyncDebounceTimer = setTimeout(() => this.flushStateSync(), delay);
+  }
+
   private setupStateSync() {
     // Listen for state updates from service worker
     if (this.bridge.on) {
-      // Handler receives the full state in the broadcast payload - no need to re-fetch!
+      // The broadcast carries the change itself, so there is no round-trip.
       this.stateChangedHandler = (payload: unknown) => {
-        // Debounce rapid state change events to reduce re-renders
-        if (this.stateSyncDebounceTimer) {
-          clearTimeout(this.stateSyncDebounceTimer);
-        }
-
-        this.stateSyncDebounceTimer = setTimeout(() => {
-          this.stateSyncDebounceTimer = null;
-
-          // Use the broadcast payload directly if available (eliminates round-trip!)
-          if (payload && typeof payload === 'object') {
-            this.applyBroadcastState(payload as T);
+        if (isStateDelta<T>(payload)) {
+          if (this.queueDelta(payload)) {
+            this.scheduleStateSync();
           } else {
-            // Fallback to fetch if no payload (shouldn't happen normally)
+            // Sequence gap: a broadcast was missed, so merging would leave the
+            // store silently stale. Resynchronize from the service worker.
+            this.pendingFullState = null;
+            this.expectedDeltaSequence = null;
             this.fetchAndApplyState();
           }
-        }, this.stateSyncDebounceMs);
+          return;
+        }
+
+        if (payload && typeof payload === 'object') {
+          // Whole-state payload (a peer on an older version, or a first sync).
+          this.pendingDelta = null;
+          this.pendingFullState = payload as T;
+          this.expectedDeltaSequence = null;
+        }
+
+        this.scheduleStateSync();
       };
 
       const eventKey = `store:${this.storeName}:stateChanged`;
@@ -322,13 +464,15 @@ export class BridgeStore<T> implements CentralStore<T> {
   }
 
   private notifyListeners = () => {
-    if (!this.listeners) {
+    if (!this.listeners || !this.currentState) {
       return;
     }
 
-    if (this.currentState && this.previousState) {
-      this.listeners.forEach((listener) => listener(this.currentState!, this.previousState!));
-    }
+    // The very first state to arrive has no predecessor. Reporting it with
+    // itself as `prevState` still notifies subscribers, which matters because
+    // `useSyncExternalStore` will otherwise never learn that state exists.
+    const previous = this.previousState ?? this.currentState;
+    this.listeners.forEach((listener) => listener(this.currentState!, previous));
   };
 
   getState = (): T => {
@@ -365,23 +509,20 @@ export class BridgeStore<T> implements CentralStore<T> {
 
       // Rollback optimistic update on failure
       if (stateBeforeUpdate !== null) {
-        this.previousState = this.currentState;
-        this.currentState = stateBeforeUpdate;
-        this.notifyListeners();
+        this.applyState(stateBeforeUpdate);
       }
     });
   }
 
   private applyOptimisticUpdate(actualUpdate: any, replace?: boolean): void {
-    if (this.currentState) {
-      this.previousState = this.currentState;
-      if (replace) {
-        this.currentState = actualUpdate;
-      } else {
-        this.currentState = { ...this.currentState, ...actualUpdate };
-      }
-      this.notifyListeners();
+    if (!this.currentState) {
+      return;
     }
+
+    // Routed through applyState so a write that sets a field to the value it
+    // already holds does not notify, and so untouched slices keep their
+    // identities for selectors.
+    this.applyState(replace ? actualUpdate : { ...this.currentState, ...actualUpdate });
   }
 
   subscribe = (listener: (state: T, prevState: T) => void): (() => void) => {
@@ -391,9 +532,10 @@ export class BridgeStore<T> implements CentralStore<T> {
     }
 
     this.listeners.add(listener);
-    // Call listener with current state if available
-    if (this.currentState && this.previousState) {
-      listener(this.currentState, this.previousState);
+    // Replay the current state so a subscriber joining after initialization is
+    // not left waiting for the next change.
+    if (this.currentState) {
+      listener(this.currentState, this.previousState ?? this.currentState);
     }
 
     return () => {
@@ -416,6 +558,9 @@ export class BridgeStore<T> implements CentralStore<T> {
       clearTimeout(this.stateSyncDebounceTimer);
       this.stateSyncDebounceTimer = null;
     }
+    this.stateSyncBatchStartedAt = null;
+    this.pendingDelta = null;
+    this.pendingFullState = null;
 
     // Clear reconnect delay timer
     if (this.reconnectDelayTimer) {
@@ -477,9 +622,7 @@ export class BridgeStore<T> implements CentralStore<T> {
     if (this.initialState !== null) {
       // Check if bridge is connected
       if (!this.bridge.isConnected) {
-        this.previousState = this.currentState;
-        this.currentState = { ...this.initialState };
-        this.notifyListeners();
+        this.applyState({ ...this.initialState } as T);
         return;
       }
 
@@ -487,9 +630,8 @@ export class BridgeStore<T> implements CentralStore<T> {
       const stateBeforeReset = this.currentState ? { ...this.currentState } : null;
 
       // Optimistic reset for immediate UI feedback
-      this.previousState = this.currentState;
-      this.currentState = { ...this.initialState };
-      this.notifyListeners();
+      this.expectedDeltaSequence = null;
+      this.applyState({ ...this.initialState } as T);
 
       // Send reset command to service worker
       this.bridge.send(`store:${this.storeName}:reset`).catch((error: any) => {
@@ -497,9 +639,7 @@ export class BridgeStore<T> implements CentralStore<T> {
 
         // Rollback on failure
         if (stateBeforeReset !== null) {
-          this.previousState = this.currentState;
-          this.currentState = stateBeforeReset;
-          this.notifyListeners();
+          this.applyState(stateBeforeReset);
         }
       });
     }

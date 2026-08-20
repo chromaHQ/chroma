@@ -1,6 +1,7 @@
 import { createStore as createZustandStore, StateCreator } from 'zustand/vanilla';
 import { chromeStoragePersist } from './persist.js';
 import { createBridgeStore, type BridgeWithEvents } from './bridge.js';
+import { createStateDelta } from './stateDelta.js';
 import type { CentralStore, PersistOptions } from './types.js';
 
 interface StoreConfig {
@@ -106,6 +107,11 @@ export class StoreBuilder<T = any> {
     };
 
     const persistOptions = {
+      ...this.config.persistence,
+      // The storage key deliberately stays the store name rather than
+      // `persistence.name`. Honouring the configured name now would orphan
+      // state written by every earlier version, which for an extension means
+      // users appearing to lose their data on upgrade.
       name: this.config.name,
       onReady: notifyReady,
     };
@@ -114,24 +120,56 @@ export class StoreBuilder<T = any> {
 
     const store = createZustandStore<T>(persistedCreator);
 
-    // Debounce broadcasts to batch rapid state updates
-    // This prevents flooding UI with stateChanged events when multiple setState calls happen in sequence
+    // Broadcasts are batched so a burst of writes reaches listening contexts as
+    // one message instead of one per write.
     let broadcastDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let broadcastBatchStartedAt: number | null = null;
     const BROADCAST_DEBOUNCE_MS = 50; // 50ms batching window
+    // A trailing debounce with no ceiling starves listeners while writes keep
+    // arriving. Once a batch has waited this long it goes out regardless.
+    const BROADCAST_MAX_WAIT_MS = 250;
+
+    // The last state every listening context is known to have received. Deltas
+    // are computed against it so a broadcast costs what changed, not what the
+    // store happens to hold.
+    let lastBroadcastState: Record<string, unknown> | null = null;
+    let broadcastSequence = 0;
+
+    const flushBroadcast = () => {
+      broadcastDebounceTimer = null;
+      broadcastBatchStartedAt = null;
+
+      if (!runtimeBridge) return;
+
+      const state = store.getState() as unknown as Record<string, unknown>;
+      const delta = createStateDelta(lastBroadcastState, state, broadcastSequence);
+
+      // Every changed slice was already coalesced into an earlier broadcast.
+      if (delta === null) return;
+
+      broadcastSequence += 1;
+      lastBroadcastState = state;
+      runtimeBridge.broadcast(`store:${this.config.name}:stateChanged`, delta);
+    };
 
     store.subscribe(() => {
-      if (runtimeBridge) {
-        // Clear existing timer to extend the batch window
-        if (broadcastDebounceTimer) {
-          clearTimeout(broadcastDebounceTimer);
-        }
+      if (!runtimeBridge) return;
 
-        // Schedule broadcast after debounce period
-        broadcastDebounceTimer = setTimeout(() => {
-          broadcastDebounceTimer = null;
-          runtimeBridge.broadcast(`store:${this.config.name}:stateChanged`, store.getState());
-        }, BROADCAST_DEBOUNCE_MS);
+      const now = Date.now();
+      if (broadcastBatchStartedAt === null) {
+        broadcastBatchStartedAt = now;
       }
+
+      const remainingMaxWait = Math.max(0, BROADCAST_MAX_WAIT_MS - (now - broadcastBatchStartedAt));
+
+      if (broadcastDebounceTimer) {
+        clearTimeout(broadcastDebounceTimer);
+      }
+
+      broadcastDebounceTimer = setTimeout(
+        flushBroadcast,
+        Math.min(BROADCAST_DEBOUNCE_MS, remainingMaxWait),
+      );
     });
 
     // Extend the store with ready functionality

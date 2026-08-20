@@ -1,5 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { PersistOptions } from './types.js';
+import { replaceEqualDeep } from './structuralShare.js';
 
 export function chromeStoragePersist<S>(
   options: PersistOptions & { onReady?: () => void } = {} as any,
@@ -56,14 +57,34 @@ export function chromeStoragePersist<S>(
       let persistDebounceTimer: ReturnType<typeof setTimeout> | null = null;
       const PERSIST_DEBOUNCE_MS = 500;
 
+      // What was last written, so a change confined to non-persisted state does
+      // not trigger another write of identical bytes.
+      let lastPersistedSnapshot: unknown = undefined;
+
+      const selectPersisted = (state: S) =>
+        options.partialize ? options.partialize(state) : state;
+
       // Helper to persist state
       const persistState = async (state: S) => {
         if (!chrome?.storage?.local) {
           return;
         }
 
+        const snapshot = selectPersisted(state);
+
+        // `replaceEqualDeep` returns the previous value when nothing changed,
+        // which makes an identity check a deep-equality check.
+        if (
+          lastPersistedSnapshot !== undefined &&
+          replaceEqualDeep(lastPersistedSnapshot, snapshot) === lastPersistedSnapshot
+        ) {
+          return;
+        }
+
+        lastPersistedSnapshot = snapshot;
+
         return new Promise<void>((resolve) => {
-          chrome.storage.local.set({ [key]: state }, () => {
+          chrome.storage.local.set({ [key]: snapshot }, () => {
             if (chrome.runtime.lastError) {
               console.error(`Failed to persist state for "${key}":`, chrome.runtime.lastError);
             }

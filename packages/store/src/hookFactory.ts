@@ -55,10 +55,17 @@ export function createStoreHooks<T extends Record<string, any>>() {
     return React.createElement(StoreContext.Provider, { value: storeRef.current }, children);
   }
 
-  function useStore<U>(selector: (state: T) => U): U {
+  /**
+   * Reads a slice of the store.
+   *
+   * @param selector - Reads the slice this component needs.
+   * @param equalityFn - Only needed when the selector builds a new value rather
+   *   than returning one held in state; pass `shallow` for objects and arrays.
+   */
+  function useStore<U>(selector: (state: T) => U, equalityFn?: (a: U, b: U) => boolean): U {
     const store = useContext(StoreContext);
     if (!store) throw new Error('useStore must be used within a StoreProvider');
-    return useCentralStore(store, selector);
+    return useCentralStore(store, selector, equalityFn);
   }
 
   function useStoreInstance(): CentralStore<T> {
