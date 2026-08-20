@@ -453,9 +453,10 @@ Beyond migration, persistence fails closed:
   than assumed persisted;
 - a slice key is removed only after the index has stopped naming it.
 
-**Extensions with a large state should request the `unlimitedStorage`
-permission.** Without it `chrome.storage.local` is capped at 10MB, and the
-headroom check will decline to migrate a store that is close to it.
+`chrome.storage.local` is capped at 10MB unless the extension requests
+`unlimitedStorage`. Adding that permission to a published extension is not
+always acceptable, so the headroom check is the safety net either way: a store
+too close to the cap simply keeps the blob layout and stays correct.
 
 ### Keeping large data out of storage
 
