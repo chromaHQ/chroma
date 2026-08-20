@@ -91,33 +91,66 @@ export function replaceEqualDeep<T>(previous: unknown, next: T): T {
 
     if (previousArray.length !== nextArray.length) {
       // Length changed, but individual elements may still be reusable.
-      return nextArray.map((item, index) => replaceEqualDeep(previousArray[index], item)) as T;
+      const resized = new Array(nextArray.length);
+      for (let index = 0; index < nextArray.length; index += 1) {
+        resized[index] = replaceEqualDeep(previousArray[index], nextArray[index]);
+      }
+      return resized as T;
     }
 
-    let changed = false;
-    const merged = nextArray.map((item, index) => {
-      const mergedItem = replaceEqualDeep(previousArray[index], item);
-      if (mergedItem !== previousArray[index]) changed = true;
-      return mergedItem;
-    });
+    // Nothing is allocated until an element actually differs. On a large state
+    // most subtrees are unchanged, and eagerly building a copy of each one only
+    // to discard it dominates the cost of the walk.
+    let merged: unknown[] | null = null;
 
-    return (changed ? merged : previous) as T;
+    for (let index = 0; index < nextArray.length; index += 1) {
+      const value = replaceEqualDeep(previousArray[index], nextArray[index]);
+
+      if (merged === null) {
+        if (value !== previousArray[index]) {
+          // First divergence: everything before it was reusable as-is.
+          merged = previousArray.slice(0, index);
+          merged.push(value);
+        }
+        continue;
+      }
+
+      merged.push(value);
+    }
+
+    return (merged ?? previousArray) as T;
   }
 
   if (isPlainObject(previous) && isPlainObject(next)) {
-    const previousKeys = Object.keys(previous);
     const nextKeys = Object.keys(next);
+    const shapeChanged = Object.keys(previous).length !== nextKeys.length;
 
-    let changed = previousKeys.length !== nextKeys.length;
-    const merged: Record<string, unknown> = {};
+    // A changed shape always needs a new object, so fill one from the start.
+    let merged: Record<string, unknown> | null = shapeChanged ? {} : null;
 
-    for (const key of nextKeys) {
-      const mergedValue = replaceEqualDeep(previous[key], next[key]);
-      if (mergedValue !== previous[key]) changed = true;
-      merged[key] = mergedValue;
+    for (let index = 0; index < nextKeys.length; index += 1) {
+      const key = nextKeys[index];
+      const value = replaceEqualDeep(previous[key], next[key]);
+
+      if (merged === null) {
+        // The `in` check only runs for undefined values, where identity alone
+        // cannot tell "absent" from "present and undefined".
+        const diverged = value !== previous[key] || (value === undefined && !(key in previous));
+
+        if (diverged) {
+          merged = {};
+          for (let earlier = 0; earlier < index; earlier += 1) {
+            merged[nextKeys[earlier]] = previous[nextKeys[earlier]];
+          }
+          merged[key] = value;
+        }
+        continue;
+      }
+
+      merged[key] = value;
     }
 
-    return (changed ? merged : previous) as T;
+    return (merged ?? previous) as T;
   }
 
   return next;
