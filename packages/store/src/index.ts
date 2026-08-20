@@ -5,6 +5,12 @@ export * from './types.js';
 export * from './react.js';
 export * from './bridge.js';
 export * from './hookFactory.js';
+export * from './shallow.js';
+export * from './structuralShare.js';
+export * from './stateDelta.js';
+export * from './topics.js';
+export * from './storageLayout.js';
+export * from './persistenceEvents.js';
 
 export {
   createStore,
@@ -31,6 +37,10 @@ export async function init(storeDefinition: StoreDefinition): Promise<any> {
     // Add slices
     if (storeDefinition.slices) {
       builder = builder.withSlices(...storeDefinition.slices);
+    }
+
+    if (storeDefinition.persistence) {
+      builder = builder.withPersistence(storeDefinition.persistence);
     }
 
     const store = await builder.create();

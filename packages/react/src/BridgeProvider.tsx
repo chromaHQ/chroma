@@ -236,6 +236,18 @@ interface Bridge {
     timeoutDuration?: number,
   ) => Promise<CriticalOperationResult<Res>>;
   broadcast: (key: string, payload: unknown) => void;
+  /**
+   * Declare which broadcast topics this context wants.
+   *
+   * Every broadcast the service worker sends is structure-cloned per port, so a
+   * context that receives data it never reads pays for it anyway. Registering
+   * topics lets the producer build a smaller payload — or skip this port
+   * entirely. Replaces any previous registration, and is re-sent automatically
+   * after a reconnect.
+   *
+   * A context that never calls this keeps receiving every broadcast.
+   */
+  setTopics: (topics: readonly string[]) => void;
   on: (key: string, handler: (payload: unknown) => void) => void;
   off: (key: string, handler: (payload: unknown) => void) => void;
   isConnected: boolean;
@@ -415,6 +427,7 @@ interface BridgeFactoryDeps {
   consecutiveTimeoutsRef: MutableRefObject<number>;
   reconnectionGracePeriodRef: MutableRefObject<boolean>;
   healthPausedUntilRef: MutableRefObject<number>;
+  topicsRef: MutableRefObject<readonly string[] | null>;
   defaultTimeout: number;
   timeoutFailureThreshold: number;
   onReconnectNeeded: () => void;
@@ -435,6 +448,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
     consecutiveTimeoutsRef,
     reconnectionGracePeriodRef,
     healthPausedUntilRef,
+    topicsRef,
     defaultTimeout,
     timeoutFailureThreshold,
     onReconnectNeeded,
@@ -818,6 +832,23 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
     }
   };
 
+  const setTopics = (topics: readonly string[]): void => {
+    // Remembered even while disconnected so the reconnect path can replay it.
+    topicsRef.current = topics;
+
+    if (!portRef.current) {
+      return;
+    }
+
+    try {
+      portRef.current.postMessage({ type: 'topics', topics });
+    } catch (e) {
+      if (bridgeUiLogsEnabled()) {
+        console.warn('[Bridge] Topic registration failed:', e);
+      }
+    }
+  };
+
   const on = (key: string, handler: (payload: unknown) => void): void => {
     if (!eventListenersRef.current.has(key)) {
       eventListenersRef.current.set(key, new Set());
@@ -839,6 +870,7 @@ function createBridgeInstance(deps: BridgeFactoryDeps): Bridge {
   const bridge: Bridge = {
     send,
     broadcast,
+    setTopics,
     on,
     off,
     get isConnected() {
@@ -1125,6 +1157,8 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
   // Health pause ref - can be set via broadcast or prop callback
   // This tracks when health checks should be skipped (timestamp until paused)
   const healthPausedUntilRef = useRef<number>(0);
+  // Survives reconnects so a fresh port can be told what this context wants.
+  const topicsRef = useRef<readonly string[] | null>(null);
 
   // Grace period after reconnection - ignore timeouts while SW is starting up
   const reconnectionGracePeriodRef = useRef(false);
@@ -1649,6 +1683,7 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
         consecutiveTimeoutsRef,
         reconnectionGracePeriodRef,
         healthPausedUntilRef,
+        topicsRef,
         defaultTimeout,
         timeoutFailureThreshold,
         onReconnectNeeded: triggerReconnect,
@@ -1824,6 +1859,20 @@ export const BridgeProvider: FC<BridgeProviderProps> = ({
               drainRequestQueue();
             }
           }, 200);
+
+          // Replay topic registration before anything reacts to the new
+          // connection: the service worker has a fresh port with no record of
+          // what this context subscribes to, and a store re-initializing here
+          // would otherwise be scoped against an empty registration.
+          if (topicsRef.current && portRef.current) {
+            try {
+              portRef.current.postMessage({ type: 'topics', topics: topicsRef.current });
+            } catch (err) {
+              if (bridgeUiLogsEnabled()) {
+                console.warn('[Bridge] Topic replay failed:', err);
+              }
+            }
+          }
 
           // Emit bridge:connected event for stores to re-initialize
           // Only emit AFTER verification succeeds (moved from outside .then())

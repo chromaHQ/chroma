@@ -4,6 +4,31 @@ export type PersistOptions = {
   name: string;
   version?: number;
   migrate?: (state: any, version: number) => any;
+  /**
+   * Narrows what gets written to `chrome.storage.local`.
+   *
+   * Persistence writes the whole state by default, so anything large and
+   * refetchable — cached catalogs, derived views, in-flight request bookkeeping —
+   * is re-serialized on every change and counts against the extension's storage
+   * quota. Return only what must survive a restart.
+   *
+   * @example
+   * ```ts
+   * withPersistence({
+   *   name: 'app',
+   *   partialize: ({ subnets, priceCache, ...persisted }) => persisted,
+   * });
+   * ```
+   */
+  partialize?: (state: any) => any;
+  /**
+   * Called as persistence reports what it did.
+   *
+   * The same events are recorded durably in storage; this hook exists so an app
+   * can route them somewhere it already watches, such as its own logger or an
+   * error reporter. Must not throw.
+   */
+  onEvent?: (event: import('./persistenceEvents.js').PersistenceEvent) => void;
 };
 
 export interface StoreDefinition {

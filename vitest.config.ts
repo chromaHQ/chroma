@@ -5,6 +5,6 @@ export default defineConfig({
     globals: true,
     include: ['packages/**/*.test.{ts,tsx}'],
     // Use jsdom for React component tests
-    environmentMatchGlobs: [['packages/react/**/*.test.tsx', 'jsdom']],
+    environmentMatchGlobs: [['packages/**/*.test.tsx', 'jsdom']],
   },
 });

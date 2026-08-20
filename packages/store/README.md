@@ -154,7 +154,19 @@ export function Counter() {
 
 - **Optimistic updates** - UI responds immediately
 - **Background sync** - service worker handles persistence
-- **Efficient bridge** - only sends serializable data, executes functions locally
+- **Delta broadcasts** - a change ships only the top-level slices it touched, so
+  a broadcast costs what changed rather than the size of the whole store
+- **Structural sharing** - state arriving over the bridge reuses references for
+  every subtree that did not change, so a component re-renders only when the
+  slice it selected actually moved
+- **Scoped subscriptions** - a UI context is sent only the slices its selectors
+  actually read, tracked automatically; the rest is never cloned for it
+- **Per-slice persistence** - one storage key per slice, so changing one field
+  writes one small key instead of re-serializing everything persisted
+- **Fail-closed persistence** - a read that cannot be completed disables writing
+  for the session rather than overwriting the stored copy with defaults
+- **Selective persistence** - `partialize` keeps refetchable data out of
+  `chrome.storage.local`, and identical snapshots are never rewritten
 
 ## 📚 API Reference
 
@@ -170,8 +182,29 @@ createStore<T>(name?: string): StoreBuilder<T>
 .create(): Promise<CentralStore<T>>        // Create the store
 
 // React hooks
-useCentralStore<T, U>(store, selector): U  // Subscribe to state
-useCentralDispatch<T>(store): SetState<T>  // Get state updater
+useCentralStore<T, U>(store, selector, equalityFn?): U  // Subscribe to state
+useCentralDispatch<T>(store): SetState<T>               // Get state updater
+
+// Equality helper for selectors that build a new value
+shallow<T>(a: T, b: T): boolean
+```
+
+### Selecting derived values
+
+State read straight out of the store keeps a stable reference, so the default
+`Object.is` comparison is enough:
+
+```typescript
+const wallets = useStore((state) => state.wallets); // re-renders only when wallets change
+```
+
+A selector that _builds_ a value returns a new reference every call and needs a
+comparison by value:
+
+```typescript
+import { shallow } from '@chromahq/store';
+
+const summary = useStore((state) => ({ id: state.id, name: state.name }), shallow);
 ```
 
 ### Types
@@ -181,6 +214,12 @@ useCentralDispatch<T>(store): SetState<T>  // Get state updater
 interface StoreDefinition {
   name: string;
   slices: StateCreator<any, [], [], any>[];
+  persistence?: {
+    name: string;
+    version?: number;
+    /** Narrows what reaches chrome.storage.local. */
+    partialize?: (state: any) => any;
+  };
 }
 
 // Central store interface (both ServiceWorkerStore and BridgeStore)
@@ -346,6 +385,97 @@ store.getState().increment(); // count: 0 → 1
 4. **State updates** flow instantly between contexts
 5. **Persistence** ensures state survives browser restarts
 
+### What actually crosses the bridge
+
+A broadcast carries a **delta**: the top-level slices whose values changed
+identity since the last broadcast, stamped with a sequence number. The receiving
+context merges the delta and adopts it through **structural sharing**, reusing
+its existing references for every subtree that is deeply equal.
+
+Two consequences worth knowing:
+
+- A write to one slice does not invalidate selectors reading any other slice.
+  Without structural sharing, deserialization gives every value a new identity
+  and `Object.is` reports a change everywhere.
+- A broadcast that carries no real change notifies nobody at all.
+
+If a sequence number arrives out of order — a broadcast was missed — the store
+refetches the full state instead of merging a delta onto a gap.
+
+### Scoped subscriptions
+
+Every broadcast is structure-cloned once per connected port, so a context
+receives — and pays for — data it may never read. A dApp approval window does
+not need the market catalog the main popup renders.
+
+Scoping is automatic and needs no configuration. The store tracks which
+top-level keys a context's selectors read, registers them with the service
+worker, and from then on the worker builds that port a payload containing only
+those slices. Reading a new slice for the first time widens the scope and
+triggers a resync, so nothing is ever silently stale.
+
+A context running against a runtime without topic support, or that has not read
+anything yet, keeps receiving everything — scoping only ever narrows.
+
+### Storage layout and migration
+
+State is persisted one key per top-level slice (`app::wallets`, `app::subnets`,
+…), so changing one field writes one small key rather than re-serializing
+everything. An install still on the older single-blob layout is migrated on
+load.
+
+Migration is the dangerous part, because for a moment both copies exist. The
+protocol exists because breaking any step of it destroys the surviving copy:
+
+1. **Check headroom first.** Both copies are resident during migration; if that
+   does not fit under `QUOTA_BYTES` the migration does not start. A store close
+   to the quota keeps the blob and stays correct.
+2. **Write slices and index in one call**, honouring `chrome.runtime.lastError`.
+3. **Read back and compare** against what was meant to be written. A write that
+   reports success but does not land is caught here.
+4. **Commit the layout marker** (`app::__layout`). This is the single point at
+   which authority moves from the blob to the slices — before it the blob wins,
+   after it the slices do. No heuristic ever has to guess which copy is newer.
+5. **Only now delete the blob.**
+
+Any failure leaves the marker unset, so the blob stays authoritative and the
+half-written slices are inert. Failures are counted and the migration stops
+retrying after a few, rather than thrashing storage on every boot.
+
+Beyond migration, persistence fails closed:
+
+- reads are retried before persistence gives up;
+- a read that cannot be completed disables writing for the session, so an
+  in-memory state holding slice defaults never overwrites the stored copy;
+- a torn slice layout falls back to the blob if one survives, and disables
+  writes if none does;
+- a failed write does not advance the baseline, so the change is retried rather
+  than assumed persisted;
+- a slice key is removed only after the index has stopped naming it.
+
+`chrome.storage.local` is capped at 10MB unless the extension requests
+`unlimitedStorage`. Adding that permission to a published extension is not
+always acceptable, so the headroom check is the safety net either way: a store
+too close to the cap simply keeps the blob layout and stays correct.
+
+### Keeping large data out of storage
+
+Persistence writes the whole state by default. Anything large and refetchable
+(cached catalogs, derived views) is then re-serialized on every change and
+counts against the extension's storage quota:
+
+```typescript
+export const storeDef = {
+  name: 'app',
+  slices,
+  persistence: {
+    name: 'app',
+    // subnetCatalog is refetched on boot; it does not belong in storage.
+    partialize: ({ subnetCatalog, ...persisted }) => persisted,
+  },
+};
+```
+
 ---
 
 ## 🛠️ Advanced Usage
@@ -477,8 +607,15 @@ const everythingSlice = (set, get) => ({
 const count = useStore((state) => state.count);
 const userName = useStore((state) => state.user?.name);
 
+// ✅ Good: Derived values compared by value
+const summary = useStore((state) => ({ id: state.id, name: state.name }), shallow);
+
 // ❌ Avoid: Selecting entire state
 const everything = useStore((state) => state); // Causes unnecessary re-renders
+
+// ❌ Avoid: Building a value with no equality function
+const names = useStore((state) => Object.values(state.wallets).map((w) => w.name));
+// ...returns a new array every call, so the component re-renders on every change
 ```
 
 ### 3. **Store Names**
