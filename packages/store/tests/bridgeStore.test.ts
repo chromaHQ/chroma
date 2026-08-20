@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BridgeStore, type BridgeWithEvents } from '../src/bridge';
 import { createStateDelta } from '../src/stateDelta';
+import { filterDeltaToTopics, sliceTopic } from '../src/topics';
 
 interface TestState extends Record<string, unknown> {
   wallets: Record<string, number>;
@@ -34,7 +35,10 @@ function createFakeBridge(initialState: TestState) {
       handlers.set(key, [...(handlers.get(key) ?? []), handler]);
     },
     off: (key, handler) => {
-      handlers.set(key, (handlers.get(key) ?? []).filter((entry) => entry !== handler));
+      handlers.set(
+        key,
+        (handlers.get(key) ?? []).filter((entry) => entry !== handler),
+      );
     },
   };
 
@@ -254,5 +258,29 @@ describe('BridgeStore scoped subscriptions', () => {
 
     expect(setTopics).toHaveBeenCalled();
     expect(setTopics.mock.calls[0][0]).toContain('store:test:slice:wallets');
+  });
+});
+
+describe('BridgeStore receiving a scoped delta', () => {
+  it('keeps slices the delta was filtered down from', async () => {
+    await createStore({ wallets: { a: 1 }, subnets: { 1: { price: 1 } } });
+    const before = store.getState();
+
+    // Exactly what a scoped port receives: a delta the worker narrowed to the
+    // one slice this context subscribes to.
+    const full = createStateDelta(
+      { wallets: { a: 1 }, subnets: { 1: { price: 1 } } },
+      { wallets: { a: 1 }, subnets: { 1: { price: 2 } } },
+      0,
+    )!;
+    const scoped = filterDeltaToTopics(full, 'test', new Set([sliceTopic('test', 'subnets')]));
+
+    harness.emit(STATE_CHANGED, structuredClone(scoped));
+    await vi.advanceTimersByTimeAsync(100);
+
+    // A filtered delta describes part of the state, never the whole of it:
+    // treating it as a full snapshot would drop every unsubscribed slice.
+    expect(store.getState().wallets).toEqual(before.wallets);
+    expect(store.getState().subnets).toEqual({ 1: { price: 2 } });
   });
 });

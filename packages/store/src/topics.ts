@@ -1,3 +1,5 @@
+import { STATE_DELTA_MARKER, type StateDelta } from './stateDelta.js';
+
 /**
  * Topic naming for scoped state broadcasts.
  *
@@ -30,10 +32,10 @@ export function sliceTopic(storeName: string, slice: string): string {
  * than sending an empty one.
  */
 export function filterDeltaToTopics<T>(
-  delta: { changed: Partial<T>; removed?: string[]; sequence: number },
+  delta: StateDelta<T>,
   storeName: string,
   topics: ReadonlySet<string>,
-): { changed: Partial<T>; removed?: string[]; sequence: number } {
+): StateDelta<T> {
   const changed: Partial<T> = {};
 
   for (const key of Object.keys(delta.changed) as (keyof T & string)[]) {
@@ -45,6 +47,10 @@ export function filterDeltaToTopics<T>(
   const removed = delta.removed?.filter((key) => topics.has(sliceTopic(storeName, key)));
 
   return {
+    // The marker has to survive filtering. Without it the receiver does not
+    // recognize a delta and falls back to treating the payload as a whole
+    // state, replacing everything it holds with just the changed slices.
+    [STATE_DELTA_MARKER]: true,
     changed,
     ...(removed && removed.length > 0 ? { removed } : {}),
     sequence: delta.sequence,
