@@ -308,7 +308,20 @@ export function chromeStoragePersist<S>(
         }
 
         const readBack = await readSliceLayoutQuietly(sliceNames);
-        if (!readBack || replaceEqualDeep(snapshot, readBack) !== snapshot) {
+
+        if (!readBack) {
+          await noteFailure('the slices did not read back');
+          return;
+        }
+
+        const expected = asStored(snapshot);
+
+        if (expected === null) {
+          await noteFailure('the state could not be serialized');
+          return;
+        }
+
+        if (replaceEqualDeep(expected, readBack) !== expected) {
           await noteFailure('the slices did not read back identical');
           return;
         }
@@ -330,6 +343,25 @@ export function chromeStoragePersist<S>(
           slices: sliceNames.length,
           durationMs: Date.now() - startedAt,
         });
+      };
+
+      /**
+       * What storage will hand back for a value.
+       *
+       * `chrome.storage.local` serializes with JSON semantics, so a `Set`
+       * returns as `{}`, a `Date` as a string, and `undefined` disappears.
+       * Verification has to compare against that, not against the live object,
+       * or any state holding one of them can never verify.
+       *
+       * @returns The normalized value, or `null` when it cannot be serialized
+       *   at all — in which case the write would not have landed either.
+       */
+      const asStored = (value: unknown): unknown | null => {
+        try {
+          return JSON.parse(JSON.stringify(value));
+        } catch {
+          return null;
+        }
       };
 
       /** Read-back for verification; a failure here is a verification failure. */
