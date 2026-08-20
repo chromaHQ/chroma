@@ -25,6 +25,8 @@ let storage: Record<string, unknown>;
 let failWriteWhen: ((items: Record<string, unknown>) => boolean) | null;
 let failReadsFor: string | null;
 let bytesInUse: number;
+/** Drives whether the quota cap applies. */
+let manifestPermissions: string[];
 /** Silently drops these keys on write, to model a write that reports success. */
 let swallowKeys: string[];
 
@@ -47,6 +49,7 @@ beforeEach(() => {
   failReadsFor = null;
   swallowKeys = [];
   bytesInUse = 1024;
+  manifestPermissions = ['storage'];
   lastError = undefined;
 
   set = vi.fn((items: Record<string, unknown>, callback?: () => void) => {
@@ -73,7 +76,7 @@ beforeEach(() => {
 
   globalThis.chrome = {
     get runtime() {
-      return { lastError };
+      return { lastError, getManifest: () => ({ permissions: manifestPermissions }) };
     },
     storage: {
       local: {
@@ -501,5 +504,51 @@ describe('values that do not survive the storage round trip', () => {
     // to survive.
     expect(storage.app).toEqual({ vault: 'sealed' });
     expect(storage['app::__layout']).toBeUndefined();
+  });
+});
+
+/**
+ * `chrome.storage.local.QUOTA_BYTES` is a constant: it reads 10MB whether or not
+ * `unlimitedStorage` has lifted the cap. Trusting it alone keeps the headroom
+ * check refusing to migrate exactly the large stores the permission exists for.
+ */
+describe('headroom against the real quota', () => {
+  it('refuses a large store without unlimitedStorage', async () => {
+    seedBlob();
+    // Close enough to the cap that a second copy cannot fit.
+    bytesInUse = QUOTA * 0.9;
+
+    mountStore({ name: 'app' });
+    await settle();
+
+    expect(storage['app::__layout']).toBeUndefined();
+    expect(storage.app).toBeTruthy();
+  });
+
+  it('migrates the same store once unlimitedStorage applies', async () => {
+    seedBlob();
+    // Identical usage; only the permission differs.
+    bytesInUse = QUOTA * 0.9;
+    manifestPermissions = ['storage', 'unlimitedStorage'];
+
+    mountStore({ name: 'app' });
+    await settle();
+
+    expect(storage['app::__layout']).toBe('slices');
+    expect(storage.app).toBeUndefined();
+  });
+
+  it('reports the cap it actually applied', async () => {
+    seedBlob();
+    bytesInUse = QUOTA * 0.95;
+
+    mountStore({ name: 'app' });
+    await settle();
+
+    const record = storage['app::__status'] as {
+      history: { event: { type: string; quotaBytes?: number } }[];
+    };
+    const skipped = record.history.find((e) => e.event.type === 'migration-skipped')!;
+    expect(skipped.event.quotaBytes).toBe(QUOTA);
   });
 });

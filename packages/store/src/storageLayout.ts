@@ -69,6 +69,33 @@ export const MAX_MIGRATION_ATTEMPTS = 3;
  */
 export const QUOTA_HEADROOM = 0.8;
 
+/**
+ * Whether the extension holds `unlimitedStorage`.
+ *
+ * `chrome.storage.local.QUOTA_BYTES` is a fixed constant — it reports 10MB even
+ * when `unlimitedStorage` has lifted the cap. Reading it alone would keep the
+ * headroom check refusing to migrate exactly the large stores the permission was
+ * added for.
+ */
+export function hasUnlimitedStorage(): boolean {
+  try {
+    return chrome.runtime.getManifest?.()?.permissions?.includes('unlimitedStorage') ?? false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The cap that actually applies, or `0` when there is none.
+ *
+ * Pass the result to {@link hasHeadroomForMigration}, which treats `0` as
+ * unbounded.
+ */
+export function effectiveQuotaBytes(): number {
+  if (hasUnlimitedStorage()) return 0;
+  return chrome.storage?.local?.QUOTA_BYTES ?? 0;
+}
+
 /** Rough serialized size of a value, for the headroom check. */
 export function approximateBytes(value: unknown): number {
   try {

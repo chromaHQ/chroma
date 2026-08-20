@@ -3,6 +3,7 @@ import type { PersistOptions } from './types.js';
 import { replaceEqualDeep } from './structuralShare.js';
 import {
   attemptsKey,
+  effectiveQuotaBytes,
   hasHeadroomForMigration,
   indexKey,
   layoutKey,
@@ -272,7 +273,9 @@ export function chromeStoragePersist<S>(
         const startedAt = Date.now();
 
         const bytesInUse = await storageBytesInUse();
-        const quota = chrome.storage.local.QUOTA_BYTES ?? 0;
+        // Zero when `unlimitedStorage` applies, which the headroom check reads
+        // as unbounded.
+        const quota = effectiveQuotaBytes();
 
         if (!hasHeadroomForMigration(bytesInUse, quota, snapshot)) {
           // Both copies exist at once during migration. Starting without room
