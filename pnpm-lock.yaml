@@ -218,17 +218,17 @@ importers:
         version: 19.1.0
       zustand:
         specifier: ^5.0.7
-        version: 5.0.7(@types/react@18.3.23)(immer@10.1.1)(react@19.1.0)(use-sync-external-store@1.5.0(react@19.1.0))
+        version: 5.0.7(@types/react@19.2.18)(immer@10.1.1)(react@19.1.0)(use-sync-external-store@1.5.0(react@19.1.0))
     devDependencies:
       '@testing-library/react':
         specifier: ^16.0.0
-        version: 16.3.0(@testing-library/dom@10.4.1)(@types/react@18.3.23)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
+        version: 16.3.0(@testing-library/dom@10.4.1)(@types/react@19.2.18)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
       '@types/chrome':
         specifier: ^0.0.326
         version: 0.0.326
       '@types/react':
-        specifier: ^18.2.7
-        version: 18.3.23
+        specifier: ^19.0.0
+        version: 19.2.18
       jsdom:
         specifier: ^25.0.0
         version: 25.0.1
@@ -1621,6 +1621,12 @@ packages:
         integrity: sha512-/LDXMQh55EzZQ0uVAZmKKhfENivEvWz6E+EYzh+/MCjMhNsotd+ZHhBGIjFDTi6+fz0OhQQQLbTgdQIxxCsC0w==,
       }
 
+  '@types/react@19.2.18':
+    resolution:
+      {
+        integrity: sha512-AnzbBERsrLKtk2XSfTbYRLjQPdy116Sty4q+T+Bp3IC4l6jNBvreVPAHmpq9qhXQM7CXZPjLVmGMw9sy+hxQ3w==,
+      }
+
   '@types/resolve@1.20.2':
     resolution:
       {
@@ -2356,6 +2362,12 @@ packages:
     resolution:
       {
         integrity: sha512-M1uQkMl8rQK/szD0LNhtqxIPLpimGm8sOBwU7lLnCpSbTyY3yeU1Vc7l4KT5zT4s/yOxHH5O7tIuuLOCnLADRw==,
+      }
+
+  csstype@3.2.3:
+    resolution:
+      {
+        integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==,
       }
 
   dargs@8.1.0:
@@ -6331,6 +6343,15 @@ snapshots:
     optionalDependencies:
       '@types/react': 18.3.23
 
+  '@testing-library/react@16.3.0(@testing-library/dom@10.4.1)(@types/react@19.2.18)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)':
+    dependencies:
+      '@babel/runtime': 7.28.4
+      '@testing-library/dom': 10.4.1
+      react: 19.1.0
+      react-dom: 19.1.0(react@19.1.0)
+    optionalDependencies:
+      '@types/react': 19.2.18
+
   '@types/aria-query@5.0.4': {}
 
   '@types/chai@5.2.2':
@@ -6377,6 +6398,10 @@ snapshots:
     dependencies:
       '@types/prop-types': 15.7.15
       csstype: 3.1.3
+
+  '@types/react@19.2.18':
+    dependencies:
+      csstype: 3.2.3
 
   '@types/resolve@1.20.2': {}
 
@@ -6870,6 +6895,8 @@ snapshots:
       rrweb-cssom: 0.8.0
 
   csstype@3.1.3: {}
+
+  csstype@3.2.3: {}
 
   dargs@8.1.0: {}
 
@@ -8991,9 +9018,9 @@ snapshots:
 
   yoctocolors-cjs@2.1.2: {}
 
-  zustand@5.0.7(@types/react@18.3.23)(immer@10.1.1)(react@19.1.0)(use-sync-external-store@1.5.0(react@19.1.0)):
+  zustand@5.0.7(@types/react@19.2.18)(immer@10.1.1)(react@19.1.0)(use-sync-external-store@1.5.0(react@19.1.0)):
     optionalDependencies:
-      '@types/react': 18.3.23
+      '@types/react': 19.2.18
       immer: 10.1.1
       react: 19.1.0
       use-sync-external-store: 1.5.0(react@19.1.0)

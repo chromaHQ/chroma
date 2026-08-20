@@ -50,7 +50,7 @@
   "devDependencies": {
     "@testing-library/react": "^16.0.0",
     "@types/chrome": "^0.0.326",
-    "@types/react": "^18.2.7",
+    "@types/react": "^19.0.0",
     "jsdom": "^25.0.0",
     "react-dom": "^19.1.0",
     "typescript": "^5.8.3",
