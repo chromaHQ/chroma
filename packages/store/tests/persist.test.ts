@@ -57,7 +57,11 @@ beforeEach(() => {
       return;
     }
     for (const [k, v] of Object.entries(items)) {
-      if (!swallowKeys.includes(k)) storage[k] = v;
+      // chrome.storage.local serializes with JSON semantics: a Set comes back
+      // as {}, a Date as a string, undefined disappears. Storing the live
+      // object instead would make this double kinder than the real API and
+      // hide every bug that depends on the difference.
+      if (!swallowKeys.includes(k)) storage[k] = JSON.parse(JSON.stringify(v));
     }
     callback?.();
   });
@@ -451,5 +455,51 @@ describe('persistence diagnostics', () => {
     await settle();
 
     expect(storage['app::vault']).toBe('unsealed');
+  });
+});
+
+/**
+ * State is not plain JSON in practice, and `chrome.storage.local` does not
+ * pretend otherwise. Anything comparing what was written against what comes
+ * back has to account for what the round trip destroys.
+ */
+describe('values that do not survive the storage round trip', () => {
+  it('migrates a state holding a Set', async () => {
+    // A live Set reads back as {}. Comparing it against the in-memory value
+    // makes verification impossible to pass, which aborts every migration.
+    storage.app = { vault: 'sealed', subnets: { 1: 1 } };
+
+    const store = createStore<TestState & { registered: Set<string> }>(
+      chromeStoragePersist<TestState & { registered: Set<string> }>({ name: 'app' })(() => ({
+        vault: 'sealed',
+        subnets: { 1: 1 },
+        registered: new Set(['a', 'b']),
+      })),
+    );
+    await settle();
+
+    expect(storage['app::__layout']).toBe('slices');
+    expect(storage.app).toBeUndefined();
+    expect(store.getState().vault).toBe('sealed');
+  });
+
+  it('backs out when the state cannot be serialized at all', async () => {
+    storage.app = { vault: 'sealed' };
+
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+
+    createStore<Record<string, unknown>>(
+      chromeStoragePersist<Record<string, unknown>>({ name: 'app' })(() => ({
+        vault: 'sealed',
+        circular,
+      })),
+    );
+    await settle();
+
+    // Unserializable state would not have been written either, so the blob has
+    // to survive.
+    expect(storage.app).toEqual({ vault: 'sealed' });
+    expect(storage['app::__layout']).toBeUndefined();
   });
 });
