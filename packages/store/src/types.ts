@@ -21,6 +21,14 @@ export type PersistOptions = {
    * ```
    */
   partialize?: (state: any) => any;
+  /**
+   * Called as persistence reports what it did.
+   *
+   * The same events are recorded durably in storage; this hook exists so an app
+   * can route them somewhere it already watches, such as its own logger or an
+   * error reporter. Must not throw.
+   */
+  onEvent?: (event: import('./persistenceEvents.js').PersistenceEvent) => void;
 };
 
 export interface StoreDefinition {

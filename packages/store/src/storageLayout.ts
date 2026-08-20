@@ -37,6 +37,20 @@ export function attemptsKey(name: string): string {
   return `${name}${SEPARATOR}__migrationAttempts`;
 }
 
+/**
+ * Holds a short history of what persistence did.
+ *
+ * The service worker is ephemeral and production builds strip `console`, so an
+ * in-memory diagnostic is unreadable by the time anyone looks. This survives
+ * both, and answers "did the migration run, and if not why" with one read.
+ */
+export function statusKey(name: string): string {
+  return `${name}${SEPARATOR}__status`;
+}
+
+/** How many events the status record keeps. */
+export const STATUS_HISTORY = 8;
+
 export function sliceKey(name: string, slice: string): string {
   return `${name}${SEPARATOR}${slice}`;
 }

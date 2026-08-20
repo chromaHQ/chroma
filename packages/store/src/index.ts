@@ -9,6 +9,8 @@ export * from './shallow.js';
 export * from './structuralShare.js';
 export * from './stateDelta.js';
 export * from './topics.js';
+export * from './storageLayout.js';
+export * from './persistenceEvents.js';
 
 export {
   createStore,

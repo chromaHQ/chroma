@@ -345,3 +345,111 @@ describe('writing after migration', () => {
     expect(storage.app).toEqual({ vault: 'sealed', subnets: { 1: 1 } });
   });
 });
+
+/**
+ * The service worker is ephemeral and production builds strip `console`, so
+ * "what happened during migration" has to survive in storage or it cannot be
+ * answered on a real install.
+ */
+describe('persistence diagnostics', () => {
+  const status = () =>
+    storage['app::__status'] as
+      | { layout: string; history: { at: number; event: { type: string; reason?: string } }[] }
+      | undefined;
+
+  const events = () => (status()?.history ?? []).map((entry) => entry.event.type);
+
+  it('records a completed migration', async () => {
+    seedBlob();
+    mountStore({ name: 'app' });
+    await settle();
+
+    expect(events()).toContain('migrated');
+    expect(status()!.layout).toBe('slices');
+  });
+
+  it('records why a migration was skipped, with the numbers behind it', async () => {
+    seedBlob();
+    bytesInUse = QUOTA * 0.95;
+
+    mountStore({ name: 'app' });
+    await settle();
+
+    const skipped = status()!.history.find((e) => e.event.type === 'migration-skipped')!;
+    expect(skipped.event.reason).toBe('no-headroom');
+    expect(skipped.event).toMatchObject({ bytesInUse, quotaBytes: QUOTA });
+  });
+
+  it('records the reason a migration backed out', async () => {
+    seedBlob();
+    swallowKeys = ['app::subnets'];
+
+    mountStore({ name: 'app' });
+    await settle();
+
+    const aborted = status()!.history.find((e) => e.event.type === 'migration-aborted')!;
+    expect(aborted.event.reason).toMatch(/read back/);
+  });
+
+  it('records a session that stopped writing', async () => {
+    seedBlob();
+    failReadsFor = 'app';
+
+    mountStore({ name: 'app' });
+    await settle();
+
+    expect(events()).toContain('writes-disabled');
+  });
+
+  it('records a torn layout and what it fell back to', async () => {
+    seedSlices({ vault: 'sealed', subnets: { 1: 1 } });
+    delete storage['app::subnets'];
+    storage.app = { vault: 'whole', subnets: { 2: 2 } };
+
+    mountStore({ name: 'app' });
+    await settle();
+
+    const torn = status()!.history.find((e) => e.event.type === 'layout-torn')!;
+    expect(torn.event).toMatchObject({ recovered: 'blob', missing: ['subnets'] });
+  });
+
+  it('hands the same events to an onEvent hook', async () => {
+    seedBlob();
+    const onEvent = vi.fn();
+
+    mountStore({ name: 'app', onEvent });
+    await settle();
+
+    expect(onEvent.mock.calls.map(([e]) => e.type)).toContain('migrated');
+  });
+
+  it('keeps the history bounded', async () => {
+    seedSlices({ vault: 'sealed', subnets: { 1: 1 } });
+    const store = mountStore({ name: 'app' });
+    await settle();
+
+    failWriteWhen = (items) => 'app::vault' in items;
+    for (let i = 0; i < 12; i += 1) {
+      store.setState({ vault: `attempt-${i}` });
+      await settle();
+    }
+
+    expect(status()!.history.length).toBeLessThanOrEqual(8);
+  });
+
+  it('does not let a diagnostics failure break persistence', async () => {
+    seedSlices({ vault: 'sealed', subnets: { 1: 1 } });
+    const store = mountStore({
+      name: 'app',
+      onEvent: () => {
+        throw new Error('reporter exploded');
+      },
+    });
+    await settle();
+
+    store.setState({ vault: 'unsealed' });
+    await settle();
+
+    expect(storage['app::vault']).toBe('unsealed');
+  });
+});

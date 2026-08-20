@@ -9,7 +9,10 @@ import {
   MAX_MIGRATION_ATTEMPTS,
   SLICE_LAYOUT,
   sliceKey,
+  statusKey,
+  STATUS_HISTORY,
 } from './storageLayout.js';
+import type { PersistenceEvent, PersistenceStatus } from './persistenceEvents.js';
 
 /**
  * Persists state to `chrome.storage.local`.
@@ -124,6 +127,38 @@ export function chromeStoragePersist<S>(
       /** Which layout this session writes. Only ever advanced by a verified migration. */
       let layout: Layout = 'blob';
 
+      /**
+       * Records what persistence did, durably.
+       *
+       * Written to storage rather than logged because the service worker is
+       * ephemeral and production builds strip `console`. Failing to record a
+       * diagnostic must never affect the data path, so errors here are ignored.
+       */
+      const report = async (event: PersistenceEvent): Promise<void> => {
+        try {
+          options.onEvent?.(event);
+        } catch {
+          /* An app's reporter is not allowed to break persistence. */
+        }
+
+        try {
+          const stored = await storageGetOnce([statusKey(key)]);
+          const previous = stored[statusKey(key)] as PersistenceStatus | undefined;
+
+          const status: PersistenceStatus = {
+            layout,
+            history: [{ at: Date.now(), event }, ...(previous?.history ?? [])].slice(
+              0,
+              STATUS_HISTORY,
+            ),
+          };
+
+          await storageSet({ [statusKey(key)]: status });
+        } catch {
+          /* Diagnostics must not be able to break persistence. */
+        }
+      };
+
       // Create initial state from slices
       const initialState = config(set, get, store);
 
@@ -135,6 +170,9 @@ export function chromeStoragePersist<S>(
       let persistedSlices: Record<string, unknown> = {};
       let hasPersistedBaseline = false;
 
+      /** Set when a read finds the slice layout incomplete, for reporting. */
+      let tornSlices: string[] | null = null;
+
       const readSliceLayout = async (
         sliceNames: string[],
       ): Promise<Record<string, unknown> | null> => {
@@ -143,6 +181,7 @@ export function chromeStoragePersist<S>(
 
         if (missing.length > 0) {
           console.warn(`[store] Slice layout for "${key}" is missing ${missing.join(', ')}.`);
+          tornSlices = missing;
           return null;
         }
 
@@ -178,8 +217,15 @@ export function chromeStoragePersist<S>(
             // so prefer it and let this session keep writing that way.
             console.warn(`[store] Falling back to the whole-state copy for "${key}".`);
             layout = 'blob';
+            void report({
+              type: 'layout-torn',
+              missing: tornSlices ?? [],
+              recovered: 'blob',
+            });
             return blob;
           }
+
+          void report({ type: 'layout-torn', missing: tornSlices ?? [], recovered: 'none' });
 
           // Nothing trustworthy to load. Failing here disables writes for the
           // session rather than replacing a torn layout with defaults.
@@ -214,8 +260,16 @@ export function chromeStoragePersist<S>(
         const attempts: number = attemptsRead[attemptsKey(key)] ?? 0;
 
         if (attempts >= MAX_MIGRATION_ATTEMPTS) {
+          await report({
+            type: 'migration-skipped',
+            reason: 'too-many-attempts',
+            bytesInUse: 0,
+            quotaBytes: 0,
+          });
           return;
         }
+
+        const startedAt = Date.now();
 
         const bytesInUse = await storageBytesInUse();
         const quota = chrome.storage.local.QUOTA_BYTES ?? 0;
@@ -227,12 +281,19 @@ export function chromeStoragePersist<S>(
             `[store] Not migrating "${key}" to the slice layout: ${bytesInUse} bytes in ` +
               `use leaves no room for a second copy under a ${quota} byte quota.`,
           );
+          await report({
+            type: 'migration-skipped',
+            reason: 'no-headroom',
+            bytesInUse,
+            quotaBytes: quota,
+          });
           return;
         }
 
         const noteFailure = async (reason: string) => {
           console.warn(`[store] Migration of "${key}" aborted: ${reason}`);
           await storageSet({ [attemptsKey(key)]: attempts + 1 });
+          await report({ type: 'migration-aborted', reason, attempt: attempts + 1 });
         };
 
         const sliceNames = Object.keys(snapshot);
@@ -264,6 +325,11 @@ export function chromeStoragePersist<S>(
         hasPersistedBaseline = true;
 
         await storageRemove([key, attemptsKey(key)]);
+        await report({
+          type: 'migrated',
+          slices: sliceNames.length,
+          durationMs: Date.now() - startedAt,
+        });
       };
 
       /** Read-back for verification; a failure here is a verification failure. */
@@ -309,11 +375,14 @@ export function chromeStoragePersist<S>(
             if (layout === 'slices') {
               persistedSlices = persisted;
               hasPersistedBaseline = true;
+              await report({ type: 'loaded', source: 'slices' });
               await persistState(mergedState);
             } else {
+              await report({ type: 'loaded', source: 'blob' });
               await migrateToSliceLayout(selectPersisted(mergedState));
             }
           } else {
+            await report({ type: 'loaded', source: 'none' });
             // Persist the initial state immediately so it's available for other contexts
             await persistState(initialState);
           }
@@ -324,6 +393,10 @@ export function chromeStoragePersist<S>(
               'disabled for this session so the stored copy is not overwritten.',
             error,
           );
+          await report({
+            type: 'writes-disabled',
+            reason: error instanceof Error ? error.message : String(error),
+          });
         } finally {
           setupPersistence();
           // Notify that persistence is ready
@@ -357,6 +430,8 @@ export function chromeStoragePersist<S>(
           if (await storageSet({ [key]: snapshot })) {
             persistedSlices = snapshot;
             hasPersistedBaseline = true;
+          } else {
+            void report({ type: 'write-failed', reason: 'blob write did not land' });
           }
           return;
         }
@@ -387,6 +462,7 @@ export function chromeStoragePersist<S>(
 
         if (!(await storageSet(writes))) {
           // Baseline deliberately not advanced: the next change retries.
+          void report({ type: 'write-failed', reason: 'slice write did not land' });
           return;
         }
 
