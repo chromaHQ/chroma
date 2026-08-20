@@ -163,6 +163,8 @@ export function Counter() {
   actually read, tracked automatically; the rest is never cloned for it
 - **Per-slice persistence** - one storage key per slice, so changing one field
   writes one small key instead of re-serializing everything persisted
+- **Fail-closed persistence** - a read that cannot be completed disables writing
+  for the session rather than overwriting the stored copy with defaults
 - **Selective persistence** - `partialize` keeps refetchable data out of
   `chrome.storage.local`, and identical snapshots are never rewritten
 
@@ -415,15 +417,45 @@ triggers a resync, so nothing is ever silently stale.
 A context running against a runtime without topic support, or that has not read
 anything yet, keeps receiving everything — scoping only ever narrows.
 
-### Storage layout
+### Storage layout and migration
 
 State is persisted one key per top-level slice (`app::wallets`, `app::subnets`,
-…) with an index key listing them. Changing one field writes one small key
-rather than re-serializing the whole state.
+…), so changing one field writes one small key rather than re-serializing
+everything. An install still on the older single-blob layout is migrated on
+load.
 
-An install still holding the older single-blob layout is migrated on load: every
-slice and the index are written in one operation, and the legacy key is removed
-only once that has landed.
+Migration is the dangerous part, because for a moment both copies exist. The
+protocol exists because breaking any step of it destroys the surviving copy:
+
+1. **Check headroom first.** Both copies are resident during migration; if that
+   does not fit under `QUOTA_BYTES` the migration does not start. A store close
+   to the quota keeps the blob and stays correct.
+2. **Write slices and index in one call**, honouring `chrome.runtime.lastError`.
+3. **Read back and compare** against what was meant to be written. A write that
+   reports success but does not land is caught here.
+4. **Commit the layout marker** (`app::__layout`). This is the single point at
+   which authority moves from the blob to the slices — before it the blob wins,
+   after it the slices do. No heuristic ever has to guess which copy is newer.
+5. **Only now delete the blob.**
+
+Any failure leaves the marker unset, so the blob stays authoritative and the
+half-written slices are inert. Failures are counted and the migration stops
+retrying after a few, rather than thrashing storage on every boot.
+
+Beyond migration, persistence fails closed:
+
+- reads are retried before persistence gives up;
+- a read that cannot be completed disables writing for the session, so an
+  in-memory state holding slice defaults never overwrites the stored copy;
+- a torn slice layout falls back to the blob if one survives, and disables
+  writes if none does;
+- a failed write does not advance the baseline, so the change is retried rather
+  than assumed persisted;
+- a slice key is removed only after the index has stopped naming it.
+
+**Extensions with a large state should request the `unlimitedStorage`
+permission.** Without it `chrome.storage.local` is capped at 10MB, and the
+headroom check will decline to migrate a store that is close to it.
 
 ### Keeping large data out of storage
 

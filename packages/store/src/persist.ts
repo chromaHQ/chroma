@@ -1,30 +1,29 @@
 import type { StateCreator } from 'zustand';
 import type { PersistOptions } from './types.js';
 import { replaceEqualDeep } from './structuralShare.js';
+import {
+  attemptsKey,
+  hasHeadroomForMigration,
+  indexKey,
+  layoutKey,
+  MAX_MIGRATION_ATTEMPTS,
+  SLICE_LAYOUT,
+  sliceKey,
+} from './storageLayout.js';
 
 /**
- * Storage layout.
+ * Persists state to `chrome.storage.local`.
  *
- * State is written one key per top-level slice rather than as a single blob, so
- * changing one field costs one small write instead of re-serializing everything
- * persisted. An index key records which slices exist, so loading does not have
- * to enumerate unrelated extension storage.
+ * Two layouts are supported: a single blob under the store name, and one key
+ * per top-level slice. The slice layout makes a write proportional to what
+ * changed rather than to the size of the store. `storageLayout.ts` documents
+ * the rules that make moving between them safe.
  *
- * Splitting a blob into several keys introduces a failure mode a blob does not
- * have — a torn read or a half-applied write — so every path here is written to
- * fail closed. Nothing is deleted until its replacement has been read back, and
- * a load that does not complete cleanly disables writing for the session rather
- * than letting an empty in-memory state overwrite good data on disk.
+ * Beyond the migration itself, persistence fails closed: reads are retried, a
+ * read that cannot be completed disables writing for the session so slice
+ * defaults never overwrite the stored copy, and a failed write does not advance
+ * the baseline.
  */
-const SLICE_SEPARATOR = '::';
-
-function sliceKey(name: string, slice: string): string {
-  return `${name}${SLICE_SEPARATOR}${slice}`;
-}
-
-function indexKey(name: string): string {
-  return `${name}${SLICE_SEPARATOR}__index`;
-}
 
 /** Rejects on failure so a transient read error is never mistaken for "no data". */
 function storageGetOnce(keys: string[]): Promise<Record<string, any>> {
@@ -46,7 +45,7 @@ const READ_ATTEMPTS = 3;
  * Reads with a short retry.
  *
  * Giving up on a read costs the session its persistence and shows the user an
- * empty wallet, so a transient failure is worth a couple of attempts before
+ * empty extension, so a transient failure is worth a couple of attempts before
  * concluding the data cannot be reached.
  */
 async function storageGet(keys: string[]): Promise<Record<string, any>> {
@@ -66,7 +65,7 @@ async function storageGet(keys: string[]): Promise<Record<string, any>> {
   throw lastFailure;
 }
 
-/** @returns Whether every key was written. */
+/** @returns Whether the write landed. Never resolves true on `lastError`. */
 function storageSet(items: Record<string, unknown>): Promise<boolean> {
   return new Promise((resolve) => {
     chrome.storage.local.set(items, () => {
@@ -90,12 +89,20 @@ function storageRemove(keys: string[]): Promise<void> {
   });
 }
 
-interface LoadResult {
-  state: Record<string, unknown> | null;
-  layout: 'slices' | 'legacy';
-  /** A legacy blob still on disk that has not been superseded yet. */
-  legacyPresent: boolean;
+function storageBytesInUse(): Promise<number> {
+  return new Promise((resolve) => {
+    if (typeof chrome.storage.local.getBytesInUse !== 'function') {
+      resolve(0);
+      return;
+    }
+    chrome.storage.local.getBytesInUse(null, (bytes) => {
+      void chrome.runtime.lastError;
+      resolve(bytes ?? 0);
+    });
+  });
 }
+
+type Layout = 'blob' | 'slices';
 
 export function chromeStoragePersist<S>(
   options: PersistOptions & { onReady?: () => void } = {} as any,
@@ -114,84 +121,174 @@ export function chromeStoragePersist<S>(
        */
       let writesDisabled = false;
 
+      /** Which layout this session writes. Only ever advanced by a verified migration. */
+      let layout: Layout = 'blob';
+
       // Create initial state from slices
       const initialState = config(set, get, store);
 
       const selectPersisted = (state: S): Record<string, unknown> =>
         (options.partialize ? options.partialize(state) : state) as Record<string, unknown>;
 
-      // The slices last written, so a change confined to one slice does not
-      // rewrite the others. Only advanced after a write actually succeeds.
+      // What was last written, so an unchanged snapshot is not rewritten. Only
+      // advanced after a write actually succeeds.
       let persistedSlices: Record<string, unknown> = {};
       let hasPersistedBaseline = false;
 
-      /**
-       * Reads the per-slice layout, falling back to the single-blob layout
-       * written by earlier versions.
-       *
-       * A slice named by the index but absent from storage means the layout is
-       * torn. The legacy blob is preferred in that case, because it is whole.
-       */
-      const readPersistedState = async (): Promise<LoadResult> => {
-        // One read for both layouts: which one is authoritative is decided
-        // below, and a second round trip to find out is wasted boot time.
-        const head = await storageGet([indexKey(key), key]);
-        const sliceNames: string[] | undefined = head[indexKey(key)];
-        const legacyState = head[key] as Record<string, unknown> | undefined;
+      const readSliceLayout = async (
+        sliceNames: string[],
+      ): Promise<Record<string, unknown> | null> => {
+        const stored = await storageGet(sliceNames.map((slice) => sliceKey(key, slice)));
+        const missing = sliceNames.filter((slice) => !(sliceKey(key, slice) in stored));
 
-        if (Array.isArray(sliceNames)) {
-          const stored = await storageGet(sliceNames.map((slice) => sliceKey(key, slice)));
-          const missing = sliceNames.filter((slice) => !(sliceKey(key, slice) in stored));
-
-          if (missing.length > 0 && legacyState) {
-            console.warn(
-              `[store] Slice layout for "${key}" is missing ${missing.join(', ')}; ` +
-                'falling back to the previous whole-state copy.',
-            );
-            return { state: legacyState, layout: 'legacy', legacyPresent: true };
-          }
-
-          const state: Record<string, unknown> = {};
-          for (const slice of sliceNames) {
-            const value = stored[sliceKey(key, slice)];
-            if (value !== undefined) {
-              state[slice] = value;
-            }
-          }
-
-          return { state, layout: 'slices', legacyPresent: legacyState !== undefined };
+        if (missing.length > 0) {
+          console.warn(`[store] Slice layout for "${key}" is missing ${missing.join(', ')}.`);
+          return null;
         }
 
-        return {
-          state: legacyState ?? null,
-          layout: 'legacy',
-          legacyPresent: legacyState !== undefined,
-        };
+        const state: Record<string, unknown> = {};
+        for (const slice of sliceNames) {
+          state[slice] = stored[sliceKey(key, slice)];
+        }
+        return state;
       };
 
       /**
-       * Confirms the per-slice layout can be read back before the whole-state
-       * copy it replaces is deleted.
+       * Reads whichever copy the layout marker says is authoritative.
        *
-       * Without this, a write that reported success but did not land would take
-       * the only intact copy of the user's data with it.
+       * The marker is the whole point: with it there is never a question of
+       * which copy is newer, so a stale leftover from an aborted migration can
+       * never be mistaken for current data.
        */
-      const verifySliceLayout = async (snapshot: Record<string, unknown>): Promise<boolean> => {
+      const readPersistedState = async (): Promise<Record<string, unknown> | null> => {
+        const head = await storageGet([layoutKey(key), indexKey(key), key]);
+        const blob = head[key] as Record<string, unknown> | undefined;
+        const sliceNames: string[] | undefined = head[indexKey(key)];
+
+        if (head[layoutKey(key)] === SLICE_LAYOUT && Array.isArray(sliceNames)) {
+          layout = 'slices';
+          const state = await readSliceLayout(sliceNames);
+
+          if (state) {
+            return state;
+          }
+
+          if (blob) {
+            // Torn slice layout with the blob still present: the blob is whole,
+            // so prefer it and let this session keep writing that way.
+            console.warn(`[store] Falling back to the whole-state copy for "${key}".`);
+            layout = 'blob';
+            return blob;
+          }
+
+          // Nothing trustworthy to load. Failing here disables writes for the
+          // session rather than replacing a torn layout with defaults.
+          throw new Error(`Slice layout for "${key}" is incomplete and has no fallback`);
+        }
+
+        if (blob) {
+          return blob;
+        }
+
+        // An interim build wrote slices without ever committing a layout
+        // marker. Read them rather than stranding the install.
+        if (Array.isArray(sliceNames) && sliceNames.length > 0) {
+          const state = await readSliceLayout(sliceNames);
+          if (state && Object.keys(state).length > 0) {
+            return state;
+          }
+        }
+
+        return null;
+      };
+
+      /**
+       * Moves a blob install onto the slice layout.
+       *
+       * Ordering is the safety: write, read back, commit the marker, and only
+       * then delete the copy being replaced. Every failure leaves the blob
+       * authoritative and the half-written slices inert.
+       */
+      const migrateToSliceLayout = async (snapshot: Record<string, unknown>): Promise<void> => {
+        const attemptsRead = await storageGet([attemptsKey(key)]);
+        const attempts: number = attemptsRead[attemptsKey(key)] ?? 0;
+
+        if (attempts >= MAX_MIGRATION_ATTEMPTS) {
+          return;
+        }
+
+        const bytesInUse = await storageBytesInUse();
+        const quota = chrome.storage.local.QUOTA_BYTES ?? 0;
+
+        if (!hasHeadroomForMigration(bytesInUse, quota, snapshot)) {
+          // Both copies exist at once during migration. Starting without room
+          // for that is how a partial write ends up deleting the only copy.
+          console.warn(
+            `[store] Not migrating "${key}" to the slice layout: ${bytesInUse} bytes in ` +
+              `use leaves no room for a second copy under a ${quota} byte quota.`,
+          );
+          return;
+        }
+
+        const noteFailure = async (reason: string) => {
+          console.warn(`[store] Migration of "${key}" aborted: ${reason}`);
+          await storageSet({ [attemptsKey(key)]: attempts + 1 });
+        };
+
+        const sliceNames = Object.keys(snapshot);
+        const writes: Record<string, unknown> = { [indexKey(key)]: sliceNames };
+        for (const slice of sliceNames) {
+          writes[sliceKey(key, slice)] = snapshot[slice];
+        }
+
+        if (!(await storageSet(writes))) {
+          await noteFailure('the write did not land');
+          return;
+        }
+
+        const readBack = await readSliceLayoutQuietly(sliceNames);
+        if (!readBack || replaceEqualDeep(snapshot, readBack) !== snapshot) {
+          await noteFailure('the slices did not read back identical');
+          return;
+        }
+
+        // The commit point. Before this line the blob is authoritative; after
+        // it, the slices are.
+        if (!(await storageSet({ [layoutKey(key)]: SLICE_LAYOUT }))) {
+          await noteFailure('the layout marker did not land');
+          return;
+        }
+
+        layout = 'slices';
+        persistedSlices = snapshot;
+        hasPersistedBaseline = true;
+
+        await storageRemove([key, attemptsKey(key)]);
+      };
+
+      /** Read-back for verification; a failure here is a verification failure. */
+      const readSliceLayoutQuietly = async (
+        sliceNames: string[],
+      ): Promise<Record<string, unknown> | null> => {
         try {
-          const sliceNames = Object.keys(snapshot);
-          const readBack = await storageGet([
+          const stored = await storageGet([
             indexKey(key),
             ...sliceNames.map((slice) => sliceKey(key, slice)),
           ]);
 
-          const storedIndex: string[] | undefined = readBack[indexKey(key)];
+          const storedIndex: string[] | undefined = stored[indexKey(key)];
           if (!Array.isArray(storedIndex) || storedIndex.length !== sliceNames.length) {
-            return false;
+            return null;
           }
 
-          return sliceNames.every((slice) => sliceKey(key, slice) in readBack);
+          const state: Record<string, unknown> = {};
+          for (const slice of sliceNames) {
+            if (!(sliceKey(key, slice) in stored)) return null;
+            state[slice] = stored[sliceKey(key, slice)];
+          }
+          return state;
         } catch {
-          return false;
+          return null;
         }
       };
 
@@ -202,7 +299,7 @@ export function chromeStoragePersist<S>(
             return;
           }
 
-          const { state: persisted, layout, legacyPresent } = await readPersistedState();
+          const persisted = await readPersistedState();
 
           if (persisted) {
             // Merge persisted state with initial state to preserve slice structure
@@ -210,21 +307,11 @@ export function chromeStoragePersist<S>(
             set(mergedState);
 
             if (layout === 'slices') {
-              // Already in the current layout: adopt what is on disk as the
-              // baseline so the first write only covers slices that differ from
-              // it, and so slices no longer selected get cleaned up.
               persistedSlices = persisted;
               hasPersistedBaseline = true;
               await persistState(mergedState);
-
-              if (legacyPresent) {
-                // Left behind by a migration that was interrupted before it
-                // could clean up. The slice layout just read fine, so it is
-                // safe to drop now.
-                await storageRemove([key]);
-              }
             } else {
-              await migrateToSliceLayout(mergedState);
+              await migrateToSliceLayout(selectPersisted(mergedState));
             }
           } else {
             // Persist the initial state immediately so it's available for other contexts
@@ -246,104 +333,70 @@ export function chromeStoragePersist<S>(
         }
       };
 
-      /**
-       * Moves a whole-state install onto the per-slice layout.
-       *
-       * Ordering is what makes this safe: write, verify by reading back, and
-       * only then delete the copy being replaced. A failure at any step leaves
-       * the original intact and the migration is retried on the next boot.
-       */
-      const migrateToSliceLayout = async (state: S) => {
-        const written = await persistState(state, { rewriteEverything: true });
-
-        if (!written) {
-          console.warn(
-            `[store] Migration of "${key}" to the slice layout did not complete; ` +
-              'keeping the previous copy and retrying on next start.',
-          );
-          return;
-        }
-
-        if (!(await verifySliceLayout(selectPersisted(state)))) {
-          console.warn(
-            `[store] Slice layout for "${key}" could not be read back; keeping the ` +
-              'previous copy.',
-          );
-          return;
-        }
-
-        await storageRemove([key]);
-      };
-
       // Debounce timer for persistence to avoid I/O storms on rapid state changes
       let persistDebounceTimer: ReturnType<typeof setTimeout> | null = null;
       const PERSIST_DEBOUNCE_MS = 500;
 
-      /** @returns Whether everything that needed writing was written. */
-      const persistState = async (
-        state: S,
-        { rewriteEverything = false }: { rewriteEverything?: boolean } = {},
-      ): Promise<boolean> => {
+      const persistState = async (state: S): Promise<void> => {
         if (!chrome?.storage?.local || writesDisabled) {
-          return false;
+          return;
         }
 
         const snapshot = selectPersisted(state);
-        const writes: Record<string, unknown> = {};
-        let changedSlices = 0;
 
+        // `replaceEqualDeep` hands back the previous value when nothing changed,
+        // which turns an identity check into a deep comparison.
+        if (
+          hasPersistedBaseline &&
+          replaceEqualDeep(persistedSlices, snapshot) === persistedSlices
+        ) {
+          return;
+        }
+
+        if (layout === 'blob') {
+          if (await storageSet({ [key]: snapshot })) {
+            persistedSlices = snapshot;
+            hasPersistedBaseline = true;
+          }
+          return;
+        }
+
+        const writes: Record<string, unknown> = {};
         for (const slice of Object.keys(snapshot)) {
           const previous = persistedSlices[slice];
-
-          // `replaceEqualDeep` hands back the previous value when nothing
-          // changed, which turns an identity check into a deep comparison.
           if (
-            !rewriteEverything &&
             hasPersistedBaseline &&
             slice in persistedSlices &&
             replaceEqualDeep(previous, snapshot[slice]) === previous
           ) {
             continue;
           }
-
           writes[sliceKey(key, slice)] = snapshot[slice];
-          changedSlices += 1;
         }
 
         const nextSliceNames = Object.keys(snapshot);
-        const removedSlices = Object.keys(persistedSlices).filter((slice) => !(slice in snapshot));
-        const indexChanged =
-          rewriteEverything ||
-          !hasPersistedBaseline ||
-          removedSlices.length > 0 ||
-          nextSliceNames.length !== Object.keys(persistedSlices).length;
+        const droppedSlices = Object.keys(persistedSlices).filter((slice) => !(slice in snapshot));
 
-        if (changedSlices === 0 && !indexChanged) {
-          return true;
-        }
-
-        if (indexChanged) {
+        if (droppedSlices.length > 0 || !hasPersistedBaseline) {
           writes[indexKey(key)] = nextSliceNames;
         }
 
-        // One call, so the index can never name slices that were not written
-        // alongside it.
-        const written = await storageSet(writes);
+        if (Object.keys(writes).length === 0) {
+          return;
+        }
 
-        if (!written) {
-          // The baseline deliberately does not advance: a failed write must be
-          // retried by the next change, not silently treated as persisted.
-          return false;
+        if (!(await storageSet(writes))) {
+          // Baseline deliberately not advanced: the next change retries.
+          return;
         }
 
         persistedSlices = snapshot;
         hasPersistedBaseline = true;
 
-        if (removedSlices.length > 0) {
-          await storageRemove(removedSlices.map((slice) => sliceKey(key, slice)));
+        // Only once the index no longer names them.
+        if (droppedSlices.length > 0) {
+          await storageRemove(droppedSlices.map((slice) => sliceKey(key, slice)));
         }
-
-        return true;
       };
 
       // Set up persistence subscription with debouncing (only once)
