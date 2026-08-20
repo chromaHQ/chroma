@@ -8,6 +8,7 @@ export * from './hookFactory.js';
 export * from './shallow.js';
 export * from './structuralShare.js';
 export * from './stateDelta.js';
+export * from './topics.js';
 
 export {
   createStore,

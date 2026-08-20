@@ -2,6 +2,7 @@ import { createStore as createZustandStore, StateCreator } from 'zustand/vanilla
 import { chromeStoragePersist } from './persist.js';
 import { createBridgeStore, type BridgeWithEvents } from './bridge.js';
 import { createStateDelta } from './stateDelta.js';
+import { filterDeltaToTopics, scopeMarkerTopic } from './topics.js';
 import type { CentralStore, PersistOptions } from './types.js';
 
 interface StoreConfig {
@@ -9,6 +10,15 @@ interface StoreConfig {
   slices: StateCreator<any, [], [], any>[];
   bridge?: BridgeWithEvents;
   persistence?: PersistOptions;
+}
+
+/** The subset of the runtime bridge a service-worker store broadcasts through. */
+interface BroadcastCapableBridge {
+  broadcast: (key: string, payload: unknown) => void;
+  broadcastScoped?: (
+    key: string,
+    buildPayload: (topics: ReadonlySet<string> | null) => unknown,
+  ) => void;
 }
 
 const readyCallbacks = new Set<() => void>();
@@ -80,7 +90,7 @@ export class StoreBuilder<T = any> {
   private createServiceWorkerStore(): CentralStore<T> {
     let isReady = false;
     let initialState: T | null = null;
-    let runtimeBridge: any;
+    let runtimeBridge: BroadcastCapableBridge | undefined;
 
     const notifyReady = () => {
       isReady = true;
@@ -149,7 +159,25 @@ export class StoreBuilder<T = any> {
 
       broadcastSequence += 1;
       lastBroadcastState = state;
-      runtimeBridge.broadcast(`store:${this.config.name}:stateChanged`, delta);
+
+      const key = `store:${this.config.name}:stateChanged`;
+
+      // Older runtimes have no per-port delivery; everyone gets the full delta.
+      if (typeof runtimeBridge.broadcastScoped !== 'function') {
+        runtimeBridge.broadcast(key, delta);
+        return;
+      }
+
+      const storeName = this.config.name;
+
+      runtimeBridge.broadcastScoped(key, (topics: ReadonlySet<string> | null) => {
+        if (!topics || !topics.has(scopeMarkerTopic(storeName))) {
+          // This port never opted into scoping, so it still expects everything.
+          return delta;
+        }
+
+        return filterDeltaToTopics(delta, storeName, topics);
+      });
     };
 
     store.subscribe(() => {
@@ -180,7 +208,7 @@ export class StoreBuilder<T = any> {
           store.setState(initialState, true); // replace entire state
         }
       },
-      setBridge: (bridge: any) => {
+      setBridge: (bridge: BroadcastCapableBridge) => {
         runtimeBridge = bridge;
       },
       onReady: (callback: () => void) => {

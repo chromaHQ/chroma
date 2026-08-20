@@ -159,6 +159,10 @@ export function Counter() {
 - **Structural sharing** - state arriving over the bridge reuses references for
   every subtree that did not change, so a component re-renders only when the
   slice it selected actually moved
+- **Scoped subscriptions** - a UI context is sent only the slices its selectors
+  actually read, tracked automatically; the rest is never cloned for it
+- **Per-slice persistence** - one storage key per slice, so changing one field
+  writes one small key instead of re-serializing everything persisted
 - **Selective persistence** - `partialize` keeps refetchable data out of
   `chrome.storage.local`, and identical snapshots are never rewritten
 
@@ -395,6 +399,31 @@ Two consequences worth knowing:
 
 If a sequence number arrives out of order — a broadcast was missed — the store
 refetches the full state instead of merging a delta onto a gap.
+
+### Scoped subscriptions
+
+Every broadcast is structure-cloned once per connected port, so a context
+receives — and pays for — data it may never read. A dApp approval window does
+not need the market catalog the main popup renders.
+
+Scoping is automatic and needs no configuration. The store tracks which
+top-level keys a context's selectors read, registers them with the service
+worker, and from then on the worker builds that port a payload containing only
+those slices. Reading a new slice for the first time widens the scope and
+triggers a resync, so nothing is ever silently stale.
+
+A context running against a runtime without topic support, or that has not read
+anything yet, keeps receiving everything — scoping only ever narrows.
+
+### Storage layout
+
+State is persisted one key per top-level slice (`app::wallets`, `app::subnets`,
+…) with an index key listing them. Changing one field writes one small key
+rather than re-serializing the whole state.
+
+An install still holding the older single-blob layout is migrated on load: every
+slice and the index are written in one operation, and the legacy key is removed
+only once that has landed.
 
 ### Keeping large data out of storage
 

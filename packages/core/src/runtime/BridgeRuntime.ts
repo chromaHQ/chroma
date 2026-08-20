@@ -56,6 +56,17 @@ interface BroadcastMessage {
 }
 
 /**
+ * Sent by a UI port to declare which broadcast topics it wants.
+ *
+ * A port that never sends one keeps receiving every broadcast, so this is
+ * purely additive: scoping is opt-in per port and per feature.
+ */
+interface TopicsMessage {
+  readonly type: 'topics';
+  readonly topics: readonly string[];
+}
+
+/**
  * Message response structure for bridge communication
  */
 interface BridgeResponse {
@@ -118,6 +129,11 @@ class BridgeRuntimeManager {
   private static readonly KEEP_ALIVE_ALARM_PERIOD_MINUTES = 1;
   private isInitialized = false;
   private connectedPorts = new Set<chrome.runtime.Port>();
+  /**
+   * Topics each port has asked for. A port absent from this map has declared
+   * nothing and receives every broadcast.
+   */
+  private portTopics = new Map<chrome.runtime.Port, Set<string>>();
   private keepAliveAlarmRegistered = false;
   private readonly diagnostics: BridgeRuntimeDiagnosticsInternal = {
     keepAliveIntervalPings: 0,
@@ -326,47 +342,62 @@ class BridgeRuntimeManager {
       this.startKeepAlive();
     }
 
-    port.onMessage.addListener(async (message: BridgeRequest | BroadcastMessage) => {
-      try {
-        // Handle broadcast messages
-        if ('type' in message && message.type === 'broadcast') {
-          this.logger.debug('📡 Received broadcast:', {
-            key: message.key,
-            hasPayload: !!message.payload,
-          });
+    port.onMessage.addListener(
+      async (message: BridgeRequest | BroadcastMessage | TopicsMessage) => {
+        try {
+          // Handle topic registration
+          if ('type' in message && message.type === 'topics') {
+            const topics = new Set(message.topics ?? []);
+            this.portTopics.set(port, topics);
 
-          this.handleBroadcast(message, port);
-          return;
-        }
+            this.logger.debug('🎯 Port topics updated:', {
+              portName: port.name,
+              topicCount: topics.size,
+            });
+            return;
+          }
 
-        // Handle regular request/response messages
-        const request = message as BridgeRequest;
-        const context = this.createPipelineContext(request);
+          // Handle broadcast messages
+          if ('type' in message && message.type === 'broadcast') {
+            this.logger.debug('📡 Received broadcast:', {
+              key: message.key,
+              hasPayload: !!message.payload,
+            });
 
-        this.logger.debug('📨 Received message:', {
-          key: request.key,
-          id: request.id,
-          hasPayload: !!request.payload,
-        });
+            this.handleBroadcast(message, port);
+            return;
+          }
 
-        const response = await this.processMessage(context, port);
-        this.sendResponse(port, response);
-      } catch (error) {
-        // Only send error response for regular requests, not broadcasts
-        if (!('type' in message)) {
+          // Handle regular request/response messages
           const request = message as BridgeRequest;
           const context = this.createPipelineContext(request);
-          const errorResponse = await this.handleError(error as Error, context);
-          this.sendResponse(port, errorResponse);
-        } else {
-          this.logger.error('Error handling broadcast:', error);
+
+          this.logger.debug('📨 Received message:', {
+            key: request.key,
+            id: request.id,
+            hasPayload: !!request.payload,
+          });
+
+          const response = await this.processMessage(context, port);
+          this.sendResponse(port, response);
+        } catch (error) {
+          // Only send error response for regular requests, not broadcasts
+          if (!('type' in message)) {
+            const request = message as BridgeRequest;
+            const context = this.createPipelineContext(request);
+            const errorResponse = await this.handleError(error as Error, context);
+            this.sendResponse(port, errorResponse);
+          } else {
+            this.logger.error('Error handling broadcast:', error);
+          }
         }
-      }
-    });
+      },
+    );
 
     port.onDisconnect.addListener(() => {
       // Remove from connected ports
       this.connectedPorts.delete(port);
+      this.portTopics.delete(port);
 
       // Notify PopupVisibilityService that a port disconnected
       PopupVisibilityService.instance.onPortDisconnected();
@@ -654,6 +685,50 @@ class BridgeRuntimeManager {
         this.logger.error('Failed to broadcast to port', error);
         // Remove disconnected port
         this.connectedPorts.delete(port);
+        this.portTopics.delete(port);
+      }
+    });
+  }
+
+  /**
+   * Broadcast a payload built per recipient, so a port is only sent what it
+   * asked for.
+   *
+   * Every `postMessage` structure-clones its payload independently, so a
+   * broadcast that goes to five ports pays for five copies. Building the
+   * payload per port lets a producer omit data a given context never reads —
+   * and skip the message entirely when there is nothing to say to it.
+   *
+   * @param key - Broadcast key, as with {@link broadcast}.
+   * @param buildPayload - Receives the topics that port registered, or `null`
+   *   if it registered none. Return `undefined` to send that port nothing.
+   *
+   * @example
+   * ```ts
+   * runtime.broadcastScoped('store:app:stateChanged', (topics) => {
+   *   if (!topics) return fullDelta;              // port opted out of scoping
+   *   const scoped = filterToTopics(fullDelta, topics);
+   *   return scoped ? scoped : undefined;         // nothing relevant changed
+   * });
+   * ```
+   */
+  public broadcastScoped(
+    key: string,
+    buildPayload: (topics: ReadonlySet<string> | null) => unknown,
+  ): void {
+    this.connectedPorts.forEach((port) => {
+      const payload = buildPayload(this.portTopics.get(port) ?? null);
+
+      if (payload === undefined) {
+        return;
+      }
+
+      try {
+        port.postMessage({ type: 'broadcast', key, payload } satisfies BroadcastMessage);
+      } catch (error) {
+        this.logger.error('Failed to broadcast to port', error);
+        this.connectedPorts.delete(port);
+        this.portTopics.delete(port);
       }
     });
   }

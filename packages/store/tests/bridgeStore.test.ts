@@ -185,3 +185,74 @@ describe('BridgeStore state application', () => {
     expect(listener).toHaveBeenCalled();
   });
 });
+
+describe('BridgeStore scoped subscriptions', () => {
+  it('registers the slices selectors actually read', async () => {
+    const setTopics = vi.fn();
+    harness = createFakeBridge({ wallets: { a: 1 }, subnets: { 1: { price: 1 } } });
+    harness.bridge.setTopics = setTopics;
+    store = new BridgeStore<TestState>(harness.bridge, undefined, 'test');
+    await vi.waitFor(() => expect(store.getState()).toBeTruthy());
+
+    setTopics.mockClear();
+    // A selector reading one slice should not subscribe this context to the rest.
+    void store.getState().wallets;
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(setTopics).toHaveBeenCalledTimes(1);
+    const registered = setTopics.mock.calls[0][0] as string[];
+    expect(registered).toContain('store:test:__scoped__');
+    expect(registered).toContain('store:test:slice:wallets');
+    expect(registered).not.toContain('store:test:slice:subnets');
+  });
+
+  it('resynchronizes when a newly read slice widens the scope', async () => {
+    const setTopics = vi.fn();
+    harness = createFakeBridge({ wallets: { a: 1 }, subnets: { 1: { price: 1 } } });
+    harness.bridge.setTopics = setTopics;
+    store = new BridgeStore<TestState>(harness.bridge, undefined, 'test');
+    await vi.waitFor(() => expect(store.getState()).toBeTruthy());
+
+    void store.getState().wallets;
+    await vi.advanceTimersByTimeAsync(100);
+    harness.send.mockClear();
+
+    // Until now the worker was filtering `subnets` out, so whatever is held for
+    // it may be stale and has to be refetched rather than trusted.
+    void store.getState().subnets;
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(setTopics.mock.calls.at(-1)![0]).toContain('store:test:slice:subnets');
+    expect(harness.send).toHaveBeenCalledWith('store:test:getState');
+  });
+
+  it('does not track or register when the bridge cannot scope', async () => {
+    await createStore({ wallets: { a: 1 }, subnets: {} });
+
+    // No setTopics on the bridge: reads stay untracked and state is returned raw.
+    expect(store.getState()).toBe(store.getState());
+    void store.getState().wallets;
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(store.getState().wallets).toEqual({ a: 1 });
+  });
+
+  it('re-registers scope on reconnect, before asking for state', async () => {
+    const setTopics = vi.fn();
+    harness = createFakeBridge({ wallets: { a: 1 }, subnets: {} });
+    harness.bridge.setTopics = setTopics;
+    store = new BridgeStore<TestState>(harness.bridge, undefined, 'test');
+    await vi.waitFor(() => expect(store.getState()).toBeTruthy());
+
+    void store.getState().wallets;
+    await vi.advanceTimersByTimeAsync(100);
+    setTopics.mockClear();
+
+    // A reconnect means a fresh port, which has no record of this context.
+    harness.emit('bridge:connected', {});
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(setTopics).toHaveBeenCalled();
+    expect(setTopics.mock.calls[0][0]).toContain('store:test:slice:wallets');
+  });
+});

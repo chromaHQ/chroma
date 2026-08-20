@@ -1,6 +1,7 @@
 import type { CentralStore } from './types.js';
 import { replaceEqualDeep } from './structuralShare.js';
 import { applyStateDelta, isStateDelta, type StateDelta } from './stateDelta.js';
+import { scopeMarkerTopic, sliceTopic } from './topics.js';
 
 // Import bridge types from chroma core/react
 export interface Bridge {
@@ -15,11 +16,24 @@ export interface Bridge {
 export interface BridgeWithEvents extends Bridge {
   on?: (key: string, handler: (payload: any) => void) => void;
   off?: (key: string, handler: (payload: any) => void) => void;
+  /**
+   * Declares which broadcast topics this context wants. Optional: a bridge
+   * without it simply receives every broadcast, as before.
+   */
+  setTopics?: (topics: readonly string[]) => void;
 }
 
 export interface BridgeWithHandlers extends Bridge {
   register: (key: string, handler: (payload?: any) => any) => void;
   broadcast: (key: string, payload: any) => void;
+  /**
+   * Builds a payload per recipient from the topics that port registered.
+   * Optional: falls back to `broadcast` when the runtime does not provide it.
+   */
+  broadcastScoped?: (
+    key: string,
+    buildPayload: (topics: ReadonlySet<string> | null) => any,
+  ) => void;
   on?: (key: string, handler: (payload: any) => void) => void;
   off?: (key: string, handler: (payload: any) => void) => void;
 }
@@ -62,6 +76,17 @@ export class BridgeStore<T> implements CentralStore<T> {
   // Sequence of the next delta expected from the service worker. A gap means a
   // broadcast was missed, so the store refetches instead of merging blindly.
   private expectedDeltaSequence: number | null = null;
+
+  // Top-level keys any selector in this context has actually read. The service
+  // worker uses them to build a payload holding nothing this context ignores.
+  private readonly trackedSlices = new Set<string>();
+  private scopeSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly scopeSyncDebounceMs: number = 50;
+
+  // One tracking proxy per state object, so repeated reads of the same state do
+  // not allocate and `getState() === getState()` still holds.
+  private trackedStateSource: T | null = null;
+  private trackedStateProxy: T | null = null;
 
   // Reconnect delay timer (to allow SW to bootstrap before re-initializing)
   private reconnectDelayTimer: ReturnType<typeof setTimeout> | null = null;
@@ -139,6 +164,15 @@ export class BridgeStore<T> implements CentralStore<T> {
         // React StrictMode can cause BridgeProvider to unmount/remount, creating a new eventListenersRef
         // Since BridgeStore is cached (singleton), we must re-register our handlers
         this.reregisterEventListeners();
+
+        // The service worker has a new port with no record of our scope, so
+        // re-register before asking for state.
+        if (this.bridge.setTopics && this.trackedSlices.size > 0) {
+          this.bridge.setTopics([
+            scopeMarkerTopic(this.storeName),
+            ...[...this.trackedSlices].map((slice) => sliceTopic(this.storeName, slice)),
+          ]);
+        }
 
         // Re-initialize immediately - the bridge has already verified the connection with ping
         // No need to delay since BridgeProvider only emits bridge:connected after verification
@@ -475,8 +509,90 @@ export class BridgeStore<T> implements CentralStore<T> {
     this.listeners.forEach((listener) => listener(this.currentState!, previous));
   };
 
+  /**
+   * Records that a selector read one top-level key, widening what the service
+   * worker sends this context.
+   */
+  private recordSliceRead(slice: string): void {
+    if (this.trackedSlices.has(slice)) {
+      return;
+    }
+
+    this.trackedSlices.add(slice);
+
+    if (this.scopeSyncTimer) {
+      clearTimeout(this.scopeSyncTimer);
+    }
+    // Mounting a screen reads many keys in quick succession; one registration
+    // for the batch is enough.
+    this.scopeSyncTimer = setTimeout(() => this.syncScope(), this.scopeSyncDebounceMs);
+  }
+
+  /**
+   * Tells the service worker which slices this context reads.
+   *
+   * Widening the scope means broadcasts for the new slices were previously
+   * filtered out, so whatever is held for them may be stale — hence the
+   * refetch. Before the store is ready, `initialize` is already on its way with
+   * the full state and no extra round-trip is needed.
+   */
+  private syncScope(): void {
+    this.scopeSyncTimer = null;
+
+    if (!this.bridge.setTopics || this.trackedSlices.size === 0) {
+      return;
+    }
+
+    this.bridge.setTopics([
+      scopeMarkerTopic(this.storeName),
+      ...[...this.trackedSlices].map((slice) => sliceTopic(this.storeName, slice)),
+    ]);
+
+    if (this.ready) {
+      this.fetchAndApplyState();
+    }
+  }
+
   getState = (): T => {
-    return this.currentState as T;
+    const state = this.currentState;
+
+    // Without a bridge that understands topics there is nothing to report, so
+    // skip the proxy entirely rather than pay for reads nobody will use.
+    if (!this.bridge.setTopics || state === null || typeof state !== 'object') {
+      return state as T;
+    }
+
+    if (this.trackedStateSource === state) {
+      return this.trackedStateProxy as T;
+    }
+
+    const proxy = new Proxy(state as unknown as Record<string, unknown>, {
+      get: (target, key) => {
+        if (typeof key === 'string' && key in target) {
+          this.recordSliceRead(key);
+        }
+        return target[key as string];
+      },
+      // Enumerating the state reads everything that is in it, so the scope has
+      // to widen to match or those slices would silently stop updating.
+      ownKeys: (target) => {
+        for (const key of Object.keys(target)) {
+          this.recordSliceRead(key);
+        }
+        return Reflect.ownKeys(target);
+      },
+      has: (target, key) => {
+        if (typeof key === 'string' && key in target) {
+          this.recordSliceRead(key);
+        }
+        return Reflect.has(target, key);
+      },
+    }) as T;
+
+    this.trackedStateSource = state;
+    this.trackedStateProxy = proxy;
+
+    return proxy;
   };
 
   setState(partial: T | Partial<T> | ((state: T) => T | Partial<T>), replace?: false): void;
@@ -561,6 +677,11 @@ export class BridgeStore<T> implements CentralStore<T> {
     this.stateSyncBatchStartedAt = null;
     this.pendingDelta = null;
     this.pendingFullState = null;
+
+    if (this.scopeSyncTimer) {
+      clearTimeout(this.scopeSyncTimer);
+      this.scopeSyncTimer = null;
+    }
 
     // Clear reconnect delay timer
     if (this.reconnectDelayTimer) {
