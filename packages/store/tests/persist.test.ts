@@ -552,3 +552,201 @@ describe('headroom against the real quota', () => {
     expect(skipped.event.quotaBytes).toBe(QUOTA);
   });
 });
+
+/**
+ * A key holding `undefined` cannot exist in storage — JSON drops it. Asking for
+ * one to be written produces a layout whose index names a key that is not
+ * there, which is indistinguishable from a torn write.
+ */
+describe('state keys holding undefined', () => {
+  it('migrates a state that has one', async () => {
+    storage.app = { vault: 'sealed', subnets: { 1: 1 } };
+
+    const store = createStore<Record<string, unknown>>(
+      chromeStoragePersist<Record<string, unknown>>({ name: 'app' })(() => ({
+        vault: 'sealed',
+        subnets: { 1: 1 },
+        // Set by a network switch in the wallet that hit this.
+        subnetsFetchedAt: undefined,
+      })),
+    );
+    await settle();
+
+    expect(storage['app::__layout']).toBe('slices');
+    expect(storage.app).toBeUndefined();
+    expect(store.getState().vault).toBe('sealed');
+  });
+
+  it('leaves the key out of the index rather than naming something absent', async () => {
+    storage.app = { vault: 'sealed' };
+
+    createStore<Record<string, unknown>>(
+      chromeStoragePersist<Record<string, unknown>>({ name: 'app' })(() => ({
+        vault: 'sealed',
+        subnetsFetchedAt: undefined,
+      })),
+    );
+    await settle();
+
+    expect(storage['app::__index']).toEqual(['vault']);
+    expect(storage).not.toHaveProperty('app::subnetsFetchedAt');
+  });
+
+  it('drops it from the blob layout too, matching JSON semantics', async () => {
+    const store = createStore<Record<string, unknown>>(
+      chromeStoragePersist<Record<string, unknown>>({
+        name: 'app',
+        // No migration: exercise the blob write path directly.
+        partialize: (state: Record<string, unknown>) => ({ vault: state.vault, marker: undefined }),
+      })(() => ({ vault: 'sealed' })),
+    );
+    await settle();
+    store.setState({ vault: 'unsealed' });
+    await settle();
+
+    expect(storage.app).toEqual({ vault: 'unsealed' });
+  });
+});
+
+/**
+ * The index decides what gets read back. A key it does not name is written once
+ * and then ignored forever, which looks exactly like the value silently
+ * reverting to its default.
+ */
+describe('the index tracks the key set', () => {
+  it('names a slice that appears after the first write', async () => {
+    seedSlices({ vault: 'sealed' });
+
+    const store = createStore<Record<string, unknown>>(
+      chromeStoragePersist<Record<string, unknown>>({ name: 'app' })(() => ({
+        vault: 'sealed',
+        // Absent from storage until a network switch gives it a value.
+        subnetsFetchedAt: undefined,
+      })),
+    );
+    await settle();
+
+    store.setState({ subnetsFetchedAt: 1_700_000_000_000 });
+    await settle();
+
+    expect(storage['app::subnetsFetchedAt']).toBe(1_700_000_000_000);
+    expect(storage['app::__index']).toContain('subnetsFetchedAt');
+  });
+
+  it('survives a value going undefined and coming back', async () => {
+    seedSlices({ vault: 'sealed', marker: 1 });
+
+    const store = createStore<Record<string, unknown>>(
+      chromeStoragePersist<Record<string, unknown>>({ name: 'app' })(() => ({
+        vault: 'sealed',
+        marker: 1,
+      })),
+    );
+    await settle();
+
+    // A network switch clears it...
+    store.setState({ marker: undefined });
+    await settle();
+    expect(storage['app::__index']).toEqual(['vault']);
+
+    // ...and the next fetch restores it. Without the index following along, it
+    // would never be read again.
+    store.setState({ marker: 2 });
+    await settle();
+
+    expect(storage['app::__index']).toEqual(expect.arrayContaining(['vault', 'marker']));
+    expect(storage['app::marker']).toBe(2);
+  });
+
+  it('reads an added slice back on the next boot', async () => {
+    seedSlices({ vault: 'sealed' });
+
+    const first = createStore<Record<string, unknown>>(
+      chromeStoragePersist<Record<string, unknown>>({ name: 'app' })(() => ({
+        vault: 'sealed',
+        added: undefined,
+      })),
+    );
+    await settle();
+    first.setState({ added: 'present' });
+    await settle();
+
+    const second = createStore<Record<string, unknown>>(
+      chromeStoragePersist<Record<string, unknown>>({ name: 'app' })(() => ({
+        vault: 'sealed',
+        added: undefined,
+      })),
+    );
+    await settle();
+
+    expect(second.getState().added).toBe('present');
+  });
+});
+
+describe('recovering from a torn slice layout', () => {
+  it('repairs the layout from the blob when it can', async () => {
+    seedSlices({ vault: 'sealed', subnets: { 1: 1 } });
+    delete storage['app::subnets'];
+    storage.app = { vault: 'whole', subnets: { 2: 2 } };
+
+    const store = mountStore({ name: 'app' });
+    await settle();
+
+    // The blob was whole, so the migration simply runs again over it.
+    expect(store.getState().vault).toBe('whole');
+    expect(storage['app::__layout']).toBe('slices');
+    expect(storage['app::vault']).toBe('whole');
+    expect(storage['app::subnets']).toEqual({ 2: 2 });
+  });
+
+  it('moves authority back to the blob when it cannot repair', async () => {
+    seedSlices({ vault: 'sealed', subnets: { 1: 1 } });
+    delete storage['app::subnets'];
+    storage.app = { vault: 'whole', subnets: { 2: 2 } };
+    // No attempts left, so nothing will re-establish the slice layout.
+    storage['app::__migrationAttempts'] = 3;
+
+    const store = mountStore({ name: 'app' });
+    await settle();
+
+    // Left on 'slices', every later boot would walk the torn layout, fall back
+    // again, and treat a blob it is actively writing to as the lesser copy.
+    expect(storage['app::__layout']).toBe('blob');
+    expect(store.getState().vault).toBe('whole');
+
+    store.setState({ vault: 'later' });
+    await settle();
+    expect((storage.app as TestState).vault).toBe('later');
+  });
+});
+
+/**
+ * Serialization itself is proven in `serialQueue.test.ts`. What matters here is
+ * the property it exists to protect: storage ends up holding the last state
+ * persistence was given.
+ */
+describe('slow writes', () => {
+  it('leaves storage holding the state it last saw', async () => {
+    seedSlices({ vault: 'sealed' });
+
+    set.mockImplementation((items: Record<string, unknown>, callback?: () => void) => {
+      setTimeout(() => {
+        for (const [k, v] of Object.entries(items)) {
+          storage[k] = JSON.parse(JSON.stringify(v));
+        }
+        callback?.();
+      }, 800);
+    });
+
+    const store = mountStore({ name: 'app' });
+    await settle();
+
+    for (const value of ['first', 'second', 'third']) {
+      store.setState({ vault: value });
+      await vi.advanceTimersByTimeAsync(600);
+    }
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(storage['app::vault']).toBe('third');
+  });
+});

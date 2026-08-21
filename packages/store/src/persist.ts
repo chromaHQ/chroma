@@ -3,6 +3,7 @@ import type { PersistOptions } from './types.js';
 import { replaceEqualDeep } from './structuralShare.js';
 import {
   attemptsKey,
+  BLOB_LAYOUT,
   effectiveQuotaBytes,
   hasHeadroomForMigration,
   indexKey,
@@ -14,6 +15,7 @@ import {
   STATUS_HISTORY,
 } from './storageLayout.js';
 import type { PersistenceEvent, PersistenceStatus } from './persistenceEvents.js';
+import { createSerialQueue } from './serialQueue.js';
 
 /**
  * Persists state to `chrome.storage.local`.
@@ -163,8 +165,43 @@ export function chromeStoragePersist<S>(
       // Create initial state from slices
       const initialState = config(set, get, store);
 
-      const selectPersisted = (state: S): Record<string, unknown> =>
-        (options.partialize ? options.partialize(state) : state) as Record<string, unknown>;
+      /**
+       * The state that will actually be stored.
+       *
+       * Keys holding `undefined` are dropped. Storage serializes with JSON
+       * semantics, so such a key is silently absent when read back — which the
+       * slice layout is right to treat as a torn write, and which would
+       * otherwise abort every migration of a state that has one. A wallet hit
+       * this: switching networks sets `subnetsFetchedAt` to `undefined`.
+       */
+      const selectPersisted = (state: S): Record<string, unknown> => {
+        let selected: unknown = state;
+
+        if (options.partialize) {
+          try {
+            selected = options.partialize(state);
+          } catch (error) {
+            // An app's selector throwing must not take persistence down with
+            // it; storing the whole state is the safe direction.
+            console.error(`[store] partialize threw for "${key}"; persisting all state.`, error);
+            selected = state;
+          }
+        }
+
+        if (typeof selected !== 'object' || selected === null || Array.isArray(selected)) {
+          console.error(`[store] partialize for "${key}" did not return an object; ignoring it.`);
+          selected = state;
+        }
+
+        const source = selected as Record<string, unknown>;
+        const stored: Record<string, unknown> = {};
+        for (const field of Object.keys(source)) {
+          if (source[field] !== undefined) {
+            stored[field] = source[field];
+          }
+        }
+        return stored;
+      };
 
       // What was last written, so an unchanged snapshot is not rewritten. Only
       // advanced after a write actually succeeds.
@@ -218,6 +255,13 @@ export function chromeStoragePersist<S>(
             // so prefer it and let this session keep writing that way.
             console.warn(`[store] Falling back to the whole-state copy for "${key}".`);
             layout = 'blob';
+            // Move authority back with the data. Leaving the marker on `slices`
+            // would make every later boot walk the torn layout first and fall
+            // back again, and would strand a blob that is now the live copy.
+            //
+            // Awaited so it cannot land after a re-migration has already moved
+            // authority forward again.
+            await storageSet({ [layoutKey(key)]: BLOB_LAYOUT });
             void report({
               type: 'layout-torn',
               missing: tornSlices ?? [],
@@ -259,23 +303,24 @@ export function chromeStoragePersist<S>(
       const migrateToSliceLayout = async (snapshot: Record<string, unknown>): Promise<void> => {
         const attemptsRead = await storageGet([attemptsKey(key)]);
         const attempts: number = attemptsRead[attemptsKey(key)] ?? 0;
+        const bytesInUse = await storageBytesInUse();
+        // Zero when `unlimitedStorage` applies, which the headroom check reads
+        // as unbounded.
+        const quota = effectiveQuotaBytes();
 
         if (attempts >= MAX_MIGRATION_ATTEMPTS) {
+          // Reported with the real numbers: a reader working out why a store is
+          // stuck needs to see what it was up against, not two zeroes.
           await report({
             type: 'migration-skipped',
             reason: 'too-many-attempts',
-            bytesInUse: 0,
-            quotaBytes: 0,
+            bytesInUse,
+            quotaBytes: quota,
           });
           return;
         }
 
         const startedAt = Date.now();
-
-        const bytesInUse = await storageBytesInUse();
-        // Zero when `unlimitedStorage` applies, which the headroom check reads
-        // as unbounded.
-        const quota = effectiveQuotaBytes();
 
         if (!hasHeadroomForMigration(bytesInUse, quota, snapshot)) {
           // Both copies exist at once during migration. Starting without room
@@ -445,7 +490,16 @@ export function chromeStoragePersist<S>(
       let persistDebounceTimer: ReturnType<typeof setTimeout> | null = null;
       const PERSIST_DEBOUNCE_MS = 500;
 
-      const persistState = async (state: S): Promise<void> => {
+      /**
+       * Writes run one at a time. See `serialQueue.ts` for why that matters.
+       */
+      const writeQueue = createSerialQueue((error) => {
+        console.error(`[store] Persisting "${key}" failed.`, error);
+      });
+
+      const persistState = (state: S): Promise<void> => writeQueue.run(() => writeSnapshot(state));
+
+      const writeSnapshot = async (state: S): Promise<void> => {
         if (!chrome?.storage?.local || writesDisabled) {
           return;
         }
@@ -486,8 +540,14 @@ export function chromeStoragePersist<S>(
 
         const nextSliceNames = Object.keys(snapshot);
         const droppedSlices = Object.keys(persistedSlices).filter((slice) => !(slice in snapshot));
+        const addedSlices = nextSliceNames.filter((slice) => !(slice in persistedSlices));
 
-        if (droppedSlices.length > 0 || !hasPersistedBaseline) {
+        // A slice the index does not name is not read back, so a key added
+        // without updating the index is written once and then silently ignored
+        // forever. Additions matter as much as removals: a state key can appear
+        // because the app gained a slice, or because a value that was
+        // `undefined` became defined again.
+        if (!hasPersistedBaseline || droppedSlices.length > 0 || addedSlices.length > 0) {
           writes[indexKey(key)] = nextSliceNames;
         }
 
