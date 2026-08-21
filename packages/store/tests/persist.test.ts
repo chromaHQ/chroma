@@ -345,11 +345,29 @@ describe('writing after migration', () => {
     expect(storage['app::subnets']).toBeUndefined();
   });
 
-  it('writes the initial state when there is nothing stored at all', async () => {
+  it('starts a fresh install directly in the slice layout', async () => {
     mountStore({ name: 'app' });
     await settle();
 
+    // Writing the blob here would leave the install on it until some later
+    // boot noticed and migrated, serializing the whole state on every write in
+    // between.
+    expect(storage['app::__layout']).toBe('slices');
+    expect(storage['app::vault']).toBe('sealed');
+    expect(storage['app::subnets']).toEqual({ 1: 1 });
+    expect(storage['app::__index']).toEqual(['vault', 'subnets']);
+    expect(storage.app).toBeUndefined();
+  });
+
+  it('falls back to the blob when the layout cannot be established', async () => {
+    failWriteWhen = (items) => 'app::__index' in items;
+
+    mountStore({ name: 'app' });
+    await settle();
+
+    // Something still has to be persisted.
     expect(storage.app).toEqual({ vault: 'sealed', subnets: { 1: 1 } });
+    expect(storage['app::__layout']).toBeUndefined();
   });
 });
 
@@ -593,14 +611,19 @@ describe('state keys holding undefined', () => {
   });
 
   it('drops it from the blob layout too, matching JSON semantics', async () => {
+    // Force the blob path: with the slice layout unavailable, writes go to the
+    // whole-state copy, which must drop the key just the same.
+    failWriteWhen = (items) => 'app::__index' in items;
+
     const store = createStore<Record<string, unknown>>(
       chromeStoragePersist<Record<string, unknown>>({
         name: 'app',
-        // No migration: exercise the blob write path directly.
         partialize: (state: Record<string, unknown>) => ({ vault: state.vault, marker: undefined }),
       })(() => ({ vault: 'sealed' })),
     );
     await settle();
+
+    failWriteWhen = null;
     store.setState({ vault: 'unsealed' });
     await settle();
 

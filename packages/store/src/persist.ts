@@ -294,13 +294,14 @@ export function chromeStoragePersist<S>(
       };
 
       /**
-       * Moves a blob install onto the slice layout.
+       * Establishes the slice layout, converting a whole-state copy if one
+       * exists.
        *
        * Ordering is the safety: write, read back, commit the marker, and only
        * then delete the copy being replaced. Every failure leaves the blob
        * authoritative and the half-written slices inert.
        */
-      const migrateToSliceLayout = async (snapshot: Record<string, unknown>): Promise<void> => {
+      const establishSliceLayout = async (snapshot: Record<string, unknown>): Promise<void> => {
         const attemptsRead = await storageGet([attemptsKey(key)]);
         const attempts: number = attemptsRead[attemptsKey(key)] ?? 0;
         const bytesInUse = await storageBytesInUse();
@@ -459,12 +460,26 @@ export function chromeStoragePersist<S>(
               await persistState(mergedState);
             } else {
               await report({ type: 'loaded', source: 'blob' });
-              await migrateToSliceLayout(selectPersisted(mergedState));
+              await establishSliceLayout(selectPersisted(mergedState));
             }
           } else {
             await report({ type: 'loaded', source: 'none' });
-            // Persist the initial state immediately so it's available for other contexts
-            await persistState(initialState);
+
+            // A fresh install has nothing to convert, but it still has to end
+            // up in the slice layout. Writing the blob here would leave it
+            // there until some later boot noticed and migrated, so every write
+            // until then would serialize the whole state.
+            //
+            // The same protocol is used rather than a shortcut: an install with
+            // no data is the one case where a half-written layout has nothing
+            // to fall back to, so it is worth verifying before committing to.
+            await establishSliceLayout(selectPersisted(initialState));
+
+            if (layout === 'blob') {
+              // The layout could not be established. Something still has to be
+              // persisted, so fall back to the whole-state copy.
+              await persistState(initialState);
+            }
           }
         } catch (error) {
           writesDisabled = true;
