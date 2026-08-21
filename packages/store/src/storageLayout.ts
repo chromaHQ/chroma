@@ -58,6 +58,9 @@ export function sliceKey(name: string, slice: string): string {
 /** Value written to {@link layoutKey} once the slice layout is authoritative. */
 export const SLICE_LAYOUT = 'slices';
 
+/** Value written to {@link layoutKey} when the blob is authoritative again. */
+export const BLOB_LAYOUT = 'blob';
+
 /** Give up on migrating after this many failures, and keep using the blob. */
 export const MAX_MIGRATION_ATTEMPTS = 3;
 
