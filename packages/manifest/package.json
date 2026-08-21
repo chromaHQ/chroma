@@ -1,6 +1,6 @@
 {
   "name": "@chromahq/manifest",
-  "version": "1.0.68",
+  "version": "1.0.69",
   "description": "Manifest generation and build tooling for Chroma Chrome extensions",
   "type": "module",
   "main": "dist/manifest.cjs.js",
